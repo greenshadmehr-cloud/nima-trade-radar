@@ -21,17 +21,22 @@ def send_message(message):
     response.raise_for_status()
 
 
+
 def check_binance():
+    url = "https://contract.ourbit.com/api/v1/contract/kline/BTC_USDT"
+
     response = requests.get(
-        f"{BINANCE}/fapi/v1/ping",
-        timeout=15
+        url,
+        params={"interval": "Min15"},
+        timeout=20
     )
 
-    print("HTTP Status:", response.status_code)
-    print("Server response:", response.text[:1000])
+    print("Ourbit HTTP Status:", response.status_code)
+    print("Ourbit response:", response.text[:1500])
 
     response.raise_for_status()
-    print("Binance Futures connection: OK")
+    print("Ourbit Futures connection: OK")
+
 
 
 if __name__ == "__main__":
