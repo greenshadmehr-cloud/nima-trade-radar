@@ -1,0 +1,30 @@
+
+name: NIMA TRADE RADAR
+
+on:
+  schedule:
+    - cron: '7/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Get project files
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install requirements
+        run: pip install -r requirements.txt
+
+      - name: Run radar
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python radar.py
