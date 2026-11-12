@@ -20,13 +20,19 @@ def send_message(message):
     )
     response.raise_for_status()
 
+
 def check_binance():
     response = requests.get(
         f"{BINANCE}/fapi/v1/ping",
         timeout=15
     )
+
+    print("HTTP Status:", response.status_code)
+    print("Server response:", response.text[:1000])
+
     response.raise_for_status()
     print("Binance Futures connection: OK")
+
 
 if __name__ == "__main__":
     check_binance()
