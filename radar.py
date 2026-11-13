@@ -1,44 +1,40 @@
-
 import os
 import requests
+import time
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BASE_URL = "https://api.toobit.com"
 
-BINANCE = "https://fapi.binance.com"
+def test_api():
+    endpoints = [
+        ("/api/v1/time", {}),
+        ("/quote/v1/contract/ticker/24hr", {
+            "symbol": "BTC-SWAP-USDT"
+        }),
+        ("/quote/v1/klines", {
+            "symbol": "BTC-SWAP-USDT",
+            "interval": "15m",
+            "startTime": int(time.time() * 1000) - 6 * 60 * 60 * 1000,
+            "endTime": int(time.time() * 1000),
+            "limit": 30
+        })
+    ]
 
-def send_message(message):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("Telegram secrets are not configured.")
-        return
+    for path, params in endpoints:
+        url = BASE_URL + path
+        print("\nTesting:", url)
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    response = requests.post(
-        url,
-        data={"chat_id": CHAT_ID, "text": message},
-        timeout=15
-    )
-    response.raise_for_status()
+        response = requests.get(
+            url,
+            params=params,
+            timeout=20
+        )
 
+        print("HTTP Status:", response.status_code)
+        print("Response:", response.text[:1000])
 
+        response.raise_for_status()
 
-def check_binance():
-    url = "https://contract.ourbit.com/api/v1/contract/kline/BTC_USDT"
-
-    response = requests.get(
-        url,
-        params={"interval": "Min15"},
-        timeout=20
-    )
-
-    print("Ourbit HTTP Status:", response.status_code)
-    print("Ourbit response:", response.text[:1500])
-
-    response.raise_for_status()
-    print("Ourbit Futures connection: OK")
-
-
+    print("\nTOOBIT API TEST: SUCCESS")
 
 if __name__ == "__main__":
-    check_binance()
-    send_message("NIMA TRADE RADAR: اتصال اولیه موفق شد.")
+    test_api()
