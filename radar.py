@@ -1,40 +1,121 @@
+
 import os
 import requests
-import time
+from datetime import datetime, timezone
 
 BASE_URL = "https://api.toobit.com"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-def test_api():
-    endpoints = [
-        ("/api/v1/time", {}),
-        ("/quote/v1/contract/ticker/24hr", {
-            "symbol": "BTC-SWAP-USDT"
-        }),
-        ("/quote/v1/klines", {
-            "symbol": "BTC-SWAP-USDT",
-            "interval": "15m",
-            "startTime": int(time.time() * 1000) - 6 * 60 * 60 * 1000,
-            "endTime": int(time.time() * 1000),
-            "limit": 30
+def get_json(path):
+    response = requests.get(
+        BASE_URL + path,
+        timeout=20
+    )
+    response.raise_for_status()
+    return response.json()
+
+def get_top_contracts():
+    print("Getting exchange information...")
+
+    info = get_json("/api/v1/exchangeInfo")
+    contracts = info.get("contracts", [])
+
+    active_symbols = {
+        item["symbol"]
+        for item in contracts
+        if item.get("status") == "TRADING"
+        and item.get("quoteAsset") == "USDT"
+        and item.get("inverse") is False
+        and item.get("symbol", "").endswith("-SWAP-USDT")
+    }
+
+    print("Active USDT contracts:", len(active_symbols))
+
+    print("Getting 24h futures tickers...")
+
+    tickers = get_json("/quote/v1/contract/ticker/24hr")
+
+    ranked = []
+
+    for item in tickers:
+        symbol = item.get("s")
+
+        if symbol not in active_symbols:
+            continue
+
+        ranked.append({
+            "symbol": symbol,
+            "price": float(item["c"]),
+            "change": float(item["pcp"]) * 100,
+            "volume": float(item["qv"])
         })
+
+    ranked.sort(
+        key=lambda x: x["volume"],
+        reverse=True
+    )
+
+    return ranked[:20]
+
+def send_telegram(message):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("Telegram secrets missing.")
+        return
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_TOKEN}/sendMessage"
+    )
+
+    response = requests.post(
+        url,
+        data={
+            "chat_id": CHAT_ID,
+            "text": message
+        },
+        timeout=20
+    )
+
+    response.raise_for_status()
+    print("Telegram message sent.")
+
+def main():
+    top = get_top_contracts()
+
+    if not top:
+        raise RuntimeError("No active USDT contracts found.")
+
+    now = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M UTC"
+    )
+
+    lines = [
+        "NIMA TRADE RADAR",
+        "Toobit Futures - Top 20",
+        f"Scan time: {now}",
+        "Ranking: 24h quote volume",
+        "----------------------"
     ]
 
-    for path, params in endpoints:
-        url = BASE_URL + path
-        print("\nTesting:", url)
-
-        response = requests.get(
-            url,
-            params=params,
-            timeout=20
+    for index, item in enumerate(top, start=1):
+        line = (
+            f"{index}. {item['symbol']}\n"
+            f"Price: {item['price']}\n"
+            f"24h Change: {item['change']:.2f}%\n"
+            f"24h Volume: {item['volume']:,.0f} USDT"
         )
 
-        print("HTTP Status:", response.status_code)
-        print("Response:", response.text[:1000])
+        lines.append(line)
 
-        response.raise_for_status()
+        print(line)
+        print("----------------------")
 
-    print("\nTOOBIT API TEST: SUCCESS")
+    message = "\n".join(lines)
+
+    send_telegram(message)
+
+    print("TOP 20 SCAN: SUCCESS")
 
 if __name__ == "__main__":
-    test_api()
+    main()
