@@ -132,42 +132,51 @@ def send_telegram(message):
     print("Telegram message sent.")
 
 
+
 def main():
     top = get_top_contracts()
 
-    if not top:
-        raise RuntimeError("No active USDT contracts found.")
+    print("TOP 20 CANDLE TEST")
+    print("====================")
 
-    now = datetime.now(timezone.utc).strftime(
-        "%Y-%m-%d %H:%M UTC"
-    )
+    successful = 0
+    failed = 0
 
-    lines = [
-        "NIMA TRADE RADAR",
-        "Toobit Futures - Top 20",
-        f"Scan time: {now}",
-        "Ranking: 24h quote volume",
-        "----------------------"
-    ]
+    for item in top:
+        symbol = item["symbol"]
 
-    for index, item in enumerate(top, start=1):
-        line = (
-            f"{index}. {item['symbol']}\n"
-            f"Price: {item['price']}\n"
-            f"24h Change: {item['change']:.2f}%\n"
-            f"24h Volume: {item['volume']:,.0f} USDT"
-        )
+        try:
+            candles_15m = get_klines(symbol, "15m")
+            candles_1h = get_klines(symbol, "1h")
 
-        lines.append(line)
+            if len(candles_15m) < 30 or len(candles_1h) < 30:
+                raise RuntimeError("Not enough candles")
 
-        print(line)
-        print("----------------------")
+            latest = candles_15m[-1]
 
-    message = "\n".join(lines)
+            print(f"\n{symbol}")
+            print("15m candles:", len(candles_15m))
+            print("1h candles:", len(candles_1h))
+            print("Last closed 15m candle:")
+            print("Open:", latest[1])
+            print("High:", latest[2])
+            print("Low:", latest[3])
+            print("Close:", latest[4])
+            print("Volume:", latest[5])
 
-    send_telegram(message)
+            successful += 1
 
-    print("TOP 20 SCAN: SUCCESS")
+        except Exception as error:
+            print(f"\nERROR {symbol}: {error}")
+            failed += 1
+
+        time.sleep(0.15)
+
+    print("\n====================")
+    print("CANDLE TEST FINISHED")
+    print("Successful:", successful)
+    print("Failed:", failed)
 
 if __name__ == "__main__":
     main()
+
