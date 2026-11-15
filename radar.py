@@ -97,6 +97,221 @@ def get_klines(symbol, interval, limit=50):
     ]
 
     return candles[-limit:]
+    
+def ema(values, period):
+    if len(values) < period:
+        return None
+
+    result = sum(values[:period]) / period
+    multiplier = 2 / (period + 1)
+
+    for value in values[period:]:
+        result = (value - result) * multiplier + result
+
+    return result
+
+
+def rsi(values, period=14):
+    if len(values) <= period:
+        return None
+
+    changes = [
+        values[i] - values[i - 1]
+        for i in range(1, len(values))
+    ]
+
+    gains = [max(x, 0) for x in changes]
+    losses = [max(-x, 0) for x in changes]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = (
+            avg_gain * (period - 1) + gains[i]
+        ) / period
+        avg_loss = (
+            avg_loss * (period - 1) + losses[i]
+        ) / period
+
+    if avg_loss == 0:
+        return 100
+
+    return 100 - (100 / (1 + avg_gain / avg_loss))
+
+
+def atr(candles, period=14):
+    if len(candles) <= period:
+        return None
+
+    ranges = []
+
+    for i in range(1, len(candles)):
+        high = float(candles[i][2])
+        low = float(candles[i][3])
+        previous_close = float(candles[i - 1][4])
+
+        ranges.append(max(
+            high - low,
+            abs(high - previous_close),
+            abs(low - previous_close)
+        ))
+
+    return sum(ranges[-period:]) / period
+
+
+def analyze_symbol(symbol):
+    c15 = get_klines(symbol, "15m", 60)
+    c1h = get_klines(symbol, "1h", 60)
+
+    if len(c15) < 50 or len(c1h) < 50:
+        return None
+
+    closes15 = [float(c[4]) for c in c15]
+    closes1h = [float(c[4]) for c in c1h]
+
+    volumes = [float(c[5]) for c in c15]
+
+    price = closes15[-1]
+    current_volume = volumes[-1]
+    avg_volume = sum(volumes[-21:-1]) / 20
+
+    if avg_volume <= 0:
+        return None
+
+    volume_ratio = current_volume / avg_volume
+
+    ema20_15 = ema(closes15, 20)
+    ema50_15 = ema(closes15, 50)
+    ema20_1h = ema(closes1h, 20)
+    ema50_1h = ema(closes1h, 50)
+
+    current_rsi = rsi(closes15)
+    current_atr = atr(c15)
+
+    if None in (
+        ema20_15, ema50_15,
+        ema20_1h, ema50_1h,
+        current_rsi, current_atr
+    ):
+        return None
+
+    if current_atr <= 0:
+        return None
+
+    # Previous 20 candles, excluding current candle
+    previous = c15[-21:-1]
+
+    resistance = max(float(c[2]) for c in previous)
+    support = min(float(c[3]) for c in previous)
+
+    long_score = 0
+    short_score = 0
+
+    # 1. Trend: maximum 20
+    if ema20_15 > ema50_15 and ema20_1h > ema50_1h:
+        long_score += 20
+
+    if ema20_15 < ema50_15 and ema20_1h < ema50_1h:
+        short_score += 20
+
+    # 2. Support / resistance: maximum 20
+    if abs(price - support) <= current_atr * 0.6:
+        long_score += 20
+
+    if abs(price - resistance) <= current_atr * 0.6:
+        short_score += 20
+
+    # 3. Breakout: maximum 25
+    if price > resistance:
+        long_score += 25
+
+    if price < support:
+        short_score += 25
+
+    # 4. Volume: maximum 15
+    if volume_ratio >= 1.5:
+        volume_score = 15
+    elif volume_ratio >= 1.2:
+        volume_score = 10
+    elif volume_ratio >= 1.0:
+        volume_score = 5
+    else:
+        volume_score = 0
+
+    long_score += volume_score
+    short_score += volume_score
+
+    # 5. Momentum: maximum 10
+    if 50 <= current_rsi <= 68:
+        long_score += 10
+    elif 45 <= current_rsi < 50:
+        long_score += 5
+
+    if 32 <= current_rsi <= 50:
+        short_score += 10
+    elif 50 < current_rsi <= 55:
+        short_score += 5
+
+    # 6. Risk / reward: maximum 10
+    
+    # 6. Estimated risk / reward: maximum 10
+    recent_range = resistance - support
+
+    long_target = price + recent_range
+    short_target = price - recent_range
+
+    long_rr = (
+        (long_target - price) / (price - long_stop)
+        if price > long_stop else 0
+    )
+
+    short_rr = (
+        (price - short_target) / (short_stop - price)
+        if short_stop > price else 0
+    )
+
+    if long_rr >= 2:
+        long_score += 10
+    elif long_rr >= 1.5:
+        long_score += 5
+
+    if short_rr >= 2:
+        short_score += 10
+    elif short_rr >= 1.5:
+        short_score += 5
+
+
+    # Reject conflicting or insufficient setups
+    if long_score >= 80 and long_score > short_score:
+        signal = "LONG REVIEW"
+        score = long_score
+    elif short_score >= 80 and short_score > long_score:
+        signal = "SHORT REVIEW"
+        score = short_score
+    elif max(long_score, short_score) >= 70:
+        signal = "WATCH"
+        score = max(long_score, short_score)
+    else:
+        signal = "NO ENTRY"
+        score = max(long_score, short_score)
+
+    return {
+        "symbol": symbol,
+        "price": price,
+        "signal": signal,
+        "score": score,
+        "long_score": long_score,
+        "short_score": short_score,
+        "rsi": current_rsi,
+        "volume_ratio": volume_ratio,
+        "atr": current_atr,
+        "support": support,
+        "resistance": resistance,
+        "long_rr": long_rr,
+        "short_rr": short_rr
+    }
+
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -133,49 +348,83 @@ def send_telegram(message):
 
 
 
+
 def main():
     top = get_top_contracts()
 
-    print("TOP 20 CANDLE TEST")
-    print("====================")
+    results = []
+    errors = []
 
-    successful = 0
-    failed = 0
+    print("NIMA TRADE RADAR - ANALYSIS")
+    print("==========================")
 
     for item in top:
         symbol = item["symbol"]
 
         try:
-            candles_15m = get_klines(symbol, "15m")
-            candles_1h = get_klines(symbol, "1h")
+            result = analyze_symbol(symbol)
 
-            if len(candles_15m) < 30 or len(candles_1h) < 30:
-                raise RuntimeError("Not enough candles")
+            if result is None:
+                errors.append(symbol)
+                continue
 
-            latest = candles_15m[-1]
+            results.append(result)
 
-            print(f"\n{symbol}")
-            print("15m candles:", len(candles_15m))
-            print("1h candles:", len(candles_1h))
-            print("Last closed 15m candle:")
-            print("Open:", latest[1])
-            print("High:", latest[2])
-            print("Low:", latest[3])
-            print("Close:", latest[4])
-            print("Volume:", latest[5])
-
-            successful += 1
+            print(
+                f"{symbol} | {result['signal']} | "
+                f"Score: {result['score']} | "
+                f"RSI: {result['rsi']:.1f} | "
+                f"Volume: {result['volume_ratio']:.2f}x"
+            )
 
         except Exception as error:
-            print(f"\nERROR {symbol}: {error}")
-            failed += 1
+            print(f"ERROR {symbol}: {error}")
+            errors.append(symbol)
 
         time.sleep(0.15)
 
-    print("\n====================")
-    print("CANDLE TEST FINISHED")
-    print("Successful:", successful)
-    print("Failed:", failed)
+    results.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    lines = [
+        "NIMA TRADE RADAR",
+        "Toobit Futures | 15m + 1h",
+        "--------------------------"
+    ]
+
+    for result in results:
+        if result["signal"] == "NO ENTRY":
+            continue
+
+        lines.extend([
+            f"{result['symbol']} - {result['signal']}",
+            f"Score: {result['score']}/100",
+            f"Price: {result['price']}",
+            f"RSI: {result['rsi']:.1f}",
+            f"Volume: {result['volume_ratio']:.2f}x",
+            f"Support: {result['support']}",
+            f"Resistance: {result['resistance']}",
+            f"Estimated Long RR: {result['long_rr']:.2f}",
+            f"Estimated Short RR: {result['short_rr']:.2f}",
+            "--------------------------"
+        ])
+
+    if len(lines) == 3:
+        lines.append("No qualifying setup. NO ENTRY.")
+
+    lines.append(f"Analyzed: {len(results)}/20")
+    lines.append(f"Data errors: {len(errors)}")
+
+    message = "\n".join(lines)
+
+    print("\n" + message)
+
+    send_telegram(message)
+
+    print("\nANALYSIS FINISHED")
+
 
 if __name__ == "__main__":
     main()
