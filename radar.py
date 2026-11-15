@@ -58,6 +58,7 @@ def get_top_contracts():
 
     return ranked[:20]
 
+
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Telegram secrets missing.")
@@ -68,17 +69,29 @@ def send_telegram(message):
         f"bot{TELEGRAM_TOKEN}/sendMessage"
     )
 
-    response = requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message
-        },
-        timeout=20
-    )
+    # Split message into chunks below Telegram's limit
+    chunks = [
+        message[i:i + 3500]
+        for i in range(0, len(message), 3500)
+    ]
 
-    response.raise_for_status()
+    for chunk in chunks:
+        response = requests.post(
+            url,
+            data={
+                "chat_id": CHAT_ID,
+                "text": chunk
+            },
+            timeout=20
+        )
+
+        print("Telegram HTTP:", response.status_code)
+        print("Telegram response:", response.text[:1000])
+
+        response.raise_for_status()
+
     print("Telegram message sent.")
+
 
 def main():
     top = get_top_contracts()
