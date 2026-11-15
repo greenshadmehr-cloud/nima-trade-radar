@@ -360,6 +360,7 @@ def analyze_symbol(symbol):
     short_score = sum(short_breakdown.values())
 
     
+    
     # 6. Direction-specific risk / reward
     recent_range = resistance - support
 
@@ -393,32 +394,25 @@ def analyze_symbol(symbol):
     long_rr = 0.0
     short_rr = 0.0
 
-    if (
-        long_risk > 0
-        and long_target > price
-        and long_stop < price
-    ):
+    if long_risk > 0 and long_target > price and long_stop < price:
         long_rr = (long_target - price) / long_risk
 
-    if (
-        short_risk > 0
-        and short_target < price
-        and short_stop > price
-    ):
+    if short_risk > 0 and short_target < price and short_stop > price:
         short_rr = (price - short_target) / short_risk
 
     if long_rr >= 2:
-    long_breakdown["risk_reward"] = 10
-elif long_rr >= 1.5:
-    long_breakdown["risk_reward"] = 5
+        long_breakdown["risk_reward"] = 10
+    elif long_rr >= 1.5:
+        long_breakdown["risk_reward"] = 5
 
     if short_rr >= 2:
-    short_breakdown["risk_reward"] = 10
-elif short_rr >= 1.5:
-    short_breakdown["risk_reward"] = 5
+        short_breakdown["risk_reward"] = 10
+    elif short_rr >= 1.5:
+        short_breakdown["risk_reward"] = 5
 
-long_score = sum(long_breakdown.values())
-short_score = sum(short_breakdown.values())
+    long_score = sum(long_breakdown.values())
+    short_score = sum(short_breakdown.values())
+
 
     # Final classification
     if long_score >= 80 and long_score > short_score:
