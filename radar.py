@@ -417,7 +417,7 @@ if (
         signal = "NO ENTRY"
         score = max(long_score, short_score)
 
-    return {
+         return {
         "symbol": symbol,
         "price": price,
         "signal": signal,
