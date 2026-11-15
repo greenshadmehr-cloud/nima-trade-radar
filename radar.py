@@ -4,52 +4,76 @@ import requests
 import time
 from datetime import datetime, timezone
 
-BASE_URL = "https://api.toobit.com"
+BASE_URL = "https://contract.mexc.com"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-def get_json(path):
+
+def get_json(path, params=None):
     response = requests.get(
         BASE_URL + path,
+        params=params,
         timeout=20
     )
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+
+    if isinstance(data, dict) and data.get("success") is False:
+        raise RuntimeError(f"MEXC API error: {data}")
+
+    return data
+
 
 def get_top_contracts():
-    print("Getting exchange information...")
+    print("Getting MEXC contract information...")
 
-    info = get_json("/api/v1/exchangeInfo")
-    contracts = info.get("contracts", [])
+    info = get_json("/api/v1/contract/detail")
+    contracts = info.get("data", [])
 
-    active_symbols = {
-        item["symbol"]
-        for item in contracts
-        if item.get("status") == "TRADING"
-        and item.get("quoteAsset") == "USDT"
-        and item.get("inverse") is False
-        and item.get("symbol", "").endswith("-SWAP-USDT")
+    print("Getting MEXC futures tickers...")
+
+    ticker_data = get_json("/api/v1/contract/ticker")
+    tickers = ticker_data.get("data", [])
+
+    if isinstance(tickers, dict):
+        tickers = [tickers]
+
+    ticker_map = {
+        item["symbol"]: item
+        for item in tickers
+        if item.get("symbol")
     }
-
-    print("Active USDT contracts:", len(active_symbols))
-
-    print("Getting 24h futures tickers...")
-
-    tickers = get_json("/quote/v1/contract/ticker/24hr")
 
     ranked = []
 
-    for item in tickers:
-        symbol = item.get("s")
+    for item in contracts:
+        symbol = item.get("symbol")
 
-        if symbol not in active_symbols:
+        if (
+            item.get("quoteCoin") != "USDT"
+            or item.get("settleCoin") != "USDT"
+            or item.get("futureType") != 1
+            or item.get("state") != 0
+            or not symbol
+        ):
+            continue
+
+        ticker = ticker_map.get(symbol)
+
+        if not ticker:
+            continue
+
+        price = float(ticker.get("lastPrice", 0))
+        volume = float(ticker.get("amount24", 0))
+
+        if price <= 0 or price > 50 or volume <= 0:
             continue
 
         ranked.append({
             "symbol": symbol,
-            "price": float(item["c"]),
-            "change": float(item["pcp"]) * 100,
-            "volume": float(item["qv"])
+            "price": price,
+            "change": float(ticker.get("riseFallRate", 0)) * 100,
+            "volume": volume
         })
 
     ranked.sort(
@@ -57,46 +81,64 @@ def get_top_contracts():
         reverse=True
     )
 
+    print("Eligible contracts:", len(ranked))
+
     return ranked[:20]
 
 
 def get_klines(symbol, interval, limit=50):
-    interval_ms = {
-        "15m": 15 * 60 * 1000,
-        "1h": 60 * 60 * 1000
-    }[interval]
-
-    now = int(time.time() * 1000)
-
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "startTime": now - (limit + 2) * interval_ms,
-        "endTime": now,
-        "limit": limit + 2
+    interval_map = {
+        "1m": "Min1",
+        "5m": "Min5",
+        "15m": "Min15",
+        "30m": "Min30",
+        "1h": "Min60"
     }
 
-    response = requests.get(
-        BASE_URL + "/quote/v1/klines",
-        params=params,
-        timeout=20
+    if interval not in interval_map:
+        raise ValueError(f"Unsupported interval: {interval}")
+
+    interval_seconds = {
+        "1m": 60,
+        "5m": 300,
+        "15m": 900,
+        "30m": 1800,
+        "1h": 3600
+    }[interval]
+
+    now = int(time.time())
+
+    params = {
+        "interval": interval_map[interval],
+        "start": now - (limit + 5) * interval_seconds,
+        "end": now
+    }
+
+    result = get_json(
+        f"/api/v1/contract/kline/{symbol}",
+        params=params
     )
-    response.raise_for_status()
 
-    candles = response.json()
+    data = result.get("data", {})
+    times = data.get("time", [])
 
-    if not isinstance(candles, list):
-        raise RuntimeError(f"Unexpected candle response: {symbol}")
+    candles = []
 
-    # فقط کندل‌های بسته‌شده
-    candles = [
-        candle for candle in candles
-        if isinstance(candle, list)
-        and len(candle) >= 6
-        and int(candle[0]) + interval_ms <= now
-    ]
+    for i, timestamp in enumerate(times):
+        if timestamp + interval_seconds > now:
+            continue
+
+        candles.append([
+            int(timestamp) * 1000,
+            float(data["open"][i]),
+            float(data["high"][i]),
+            float(data["low"][i]),
+            float(data["close"][i]),
+            float(data["vol"][i])
+        ])
 
     return candles[-limit:]
+
     
 def ema(values, period):
     if len(values) < period:
