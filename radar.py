@@ -487,10 +487,14 @@ def main():
             results.append(result)
 
             print(
-                f"{symbol} | {result['signal']} | "
-                f"Score: {result['score']} | "
-                f"RSI: {result['rsi']:.1f} | "
-                f"Volume: {result['volume_ratio']:.2f}x"
+    f"{symbol} | {result['signal']} | "
+    f"Score: {result['score']} | "
+    f"LONG: {result['long_score']} | "
+    f"SHORT: {result['short_score']} | "
+    f"Ichimoku 15m: {result['ichimoku_15m']} | "
+    f"Ichimoku 1h: {result['ichimoku_1h']} | "
+    f"RSI: {result['rsi']:.1f} | "
+    f"Volume: {result['volume_ratio']:.2f}x"
             )
 
         except Exception as error:
