@@ -253,9 +253,11 @@ def analyze_symbol(symbol):
     elif 50 < current_rsi <= 55:
         short_score += 5
 
-    # 6. Risk / reward: maximum 10
-    
+
     # 6. Estimated risk / reward: maximum 10
+
+    long_stop = price - (1.5 * current_atr)
+    short_stop = price + (1.5 * current_atr)
     recent_range = resistance - support
 
     long_target = price + recent_range
