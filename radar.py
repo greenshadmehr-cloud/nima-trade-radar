@@ -160,46 +160,112 @@ def atr(candles, period=14):
     return sum(ranges[-period:]) / period
 
 
-def analyze_symbol(symbol):
-    c15 = get_klines(symbol, "15m", 60)
-    c1h = get_klines(symbol, "1h", 60)
+def ichimoku(candles):
+    if len(candles) < 80:
+        return None
 
-    if len(c15) < 50 or len(c1h) < 50:
+    highs = [float(c[2]) for c in candles]
+    lows = [float(c[3]) for c in candles]
+    closes = [float(c[4]) for c in candles]
+
+    def midpoint(period, index):
+        start = index - period + 1
+
+        if start < 0:
+            return None
+
+        highest = max(highs[start:index + 1])
+        lowest = min(lows[start:index + 1])
+
+        return (highest + lowest) / 2
+
+    last = len(candles) - 1
+    cloud_index = last - 26
+
+    # Current Tenkan and Kijun
+    tenkan = midpoint(9, last)
+    kijun = midpoint(26, last)
+
+    # Cloud currently visible at the latest candle
+    old_tenkan = midpoint(9, cloud_index)
+    old_kijun = midpoint(26, cloud_index)
+    span_b = midpoint(52, cloud_index)
+
+    if None in (tenkan, kijun, old_tenkan, old_kijun, span_b):
+        return None
+
+    span_a = (old_tenkan + old_kijun) / 2
+
+    # Projected future cloud
+    future_span_a = (tenkan + kijun) / 2
+    future_span_b = midpoint(52, last)
+
+    price = closes[-1]
+
+    cloud_top = max(span_a, span_b)
+    cloud_bottom = min(span_a, span_b)
+
+    bullish = (
+        price > cloud_top
+        and tenkan > kijun
+        and future_span_a > future_span_b
+    )
+
+    bearish = (
+        price < cloud_bottom
+        and tenkan < kijun
+        and future_span_a < future_span_b
+    )
+
+    return {
+        "tenkan": tenkan,
+        "kijun": kijun,
+        "span_a": span_a,
+        "span_b": span_b,
+        "future_span_a": future_span_a,
+        "future_span_b": future_span_b,
+        "bullish": bullish,
+        "bearish": bearish
+    }
+
+
+
+    
+def analyze_symbol(symbol):
+    c15 = get_klines(symbol, "15m", 100)
+    c1h = get_klines(symbol, "1h", 100)
+
+    if len(c15) < 80 or len(c1h) < 80:
         return None
 
     closes15 = [float(c[4]) for c in c15]
-    closes1h = [float(c[4]) for c in c1h]
-
     volumes = [float(c[5]) for c in c15]
 
     price = closes15[-1]
-    current_volume = volumes[-1]
+    previous_close = closes15[-2]
+
+    current_rsi = rsi(closes15)
+    current_atr = atr(c15)
+    ichi15 = ichimoku(c15)
+    ichi1h = ichimoku(c1h)
+
+    if (
+        current_rsi is None
+        or current_atr is None
+        or current_atr <= 0
+        or ichi15 is None
+        or ichi1h is None
+    ):
+        return None
+
     avg_volume = sum(volumes[-21:-1]) / 20
 
     if avg_volume <= 0:
         return None
 
-    volume_ratio = current_volume / avg_volume
+    volume_ratio = volumes[-1] / avg_volume
 
-    ema20_15 = ema(closes15, 20)
-    ema50_15 = ema(closes15, 50)
-    ema20_1h = ema(closes1h, 20)
-    ema50_1h = ema(closes1h, 50)
-
-    current_rsi = rsi(closes15)
-    current_atr = atr(c15)
-
-    if None in (
-        ema20_15, ema50_15,
-        ema20_1h, ema50_1h,
-        current_rsi, current_atr
-    ):
-        return None
-
-    if current_atr <= 0:
-        return None
-
-    # Previous 20 candles, excluding current candle
+    # Previous 20 closed candles, excluding the latest candle
     previous = c15[-21:-1]
 
     resistance = max(float(c[2]) for c in previous)
@@ -208,11 +274,11 @@ def analyze_symbol(symbol):
     long_score = 0
     short_score = 0
 
-    # 1. Trend: maximum 20
-    if ema20_15 > ema50_15 and ema20_1h > ema50_1h:
+    # 1. Ichimoku trend: maximum 20
+    if ichi15["bullish"] and ichi1h["bullish"]:
         long_score += 20
 
-    if ema20_15 < ema50_15 and ema20_1h < ema50_1h:
+    if ichi15["bearish"] and ichi1h["bearish"]:
         short_score += 20
 
     # 2. Support / resistance: maximum 20
@@ -222,14 +288,30 @@ def analyze_symbol(symbol):
     if abs(price - resistance) <= current_atr * 0.6:
         short_score += 20
 
-    # 3. Breakout: maximum 25
-    if price > resistance:
+    # 3. Breakout / retest: maximum 25
+    long_breakout = (
+        price > resistance
+        and (
+            previous_close <= resistance
+            or price - resistance <= current_atr * 0.5
+        )
+    )
+
+    short_breakout = (
+        price < support
+        and (
+            previous_close >= support
+            or support - price <= current_atr * 0.5
+        )
+    )
+
+    if long_breakout:
         long_score += 25
 
-    if price < support:
+    if short_breakout:
         short_score += 25
 
-    # 4. Volume: maximum 15
+    # 4. Volume confirmation: maximum 15
     if volume_ratio >= 1.5:
         volume_score = 15
     elif volume_ratio >= 1.2:
@@ -242,7 +324,7 @@ def analyze_symbol(symbol):
     long_score += volume_score
     short_score += volume_score
 
-    # 5. Momentum: maximum 10
+    # 5. RSI momentum: maximum 10
     if 50 <= current_rsi <= 68:
         long_score += 10
     elif 45 <= current_rsi < 50:
@@ -253,24 +335,46 @@ def analyze_symbol(symbol):
     elif 50 < current_rsi <= 55:
         short_score += 5
 
-
-    # 6. Estimated risk / reward: maximum 10
-
-    long_stop = price - (1.5 * current_atr)
-    short_stop = price + (1.5 * current_atr)
+    # 6. Direction-specific risk / reward
     recent_range = resistance - support
 
-    long_target = price + recent_range
-    short_target = price - recent_range
+    long_stop = (
+        resistance - 0.5 * current_atr
+        if long_breakout
+        else support - 0.5 * current_atr
+    )
+
+    short_stop = (
+        support + 0.5 * current_atr
+        if short_breakout
+        else resistance + 0.5 * current_atr
+    )
+
+    long_target = (
+        price + recent_range
+        if long_breakout
+        else resistance
+    )
+
+    short_target = (
+        price - recent_range
+        if short_breakout
+        else support
+    )
+
+    long_risk = price - long_stop
+    short_risk = short_stop - price
 
     long_rr = (
-        (long_target - price) / (price - long_stop)
-        if price > long_stop else 0
+        (long_target - price) / long_risk
+        if long_risk > 0 and long_target > price
+        else 0
     )
 
     short_rr = (
-        (price - short_target) / (short_stop - price)
-        if short_stop > price else 0
+        (price - short_target) / short_risk
+        if short_risk > 0 and short_target < price
+        else 0
     )
 
     if long_rr >= 2:
@@ -283,8 +387,7 @@ def analyze_symbol(symbol):
     elif short_rr >= 1.5:
         short_score += 5
 
-
-    # Reject conflicting or insufficient setups
+    # Final classification
     if long_score >= 80 and long_score > short_score:
         signal = "LONG REVIEW"
         score = long_score
@@ -311,8 +414,19 @@ def analyze_symbol(symbol):
         "support": support,
         "resistance": resistance,
         "long_rr": long_rr,
-        "short_rr": short_rr
+        "short_rr": short_rr,
+        "ichimoku_15m": (
+            "BULLISH" if ichi15["bullish"]
+            else "BEARISH" if ichi15["bearish"]
+            else "NEUTRAL"
+        ),
+        "ichimoku_1h": (
+            "BULLISH" if ichi1h["bullish"]
+            else "BEARISH" if ichi1h["bearish"]
+            else "NEUTRAL"
+        )
     }
+
 
 
 def send_telegram(message):
@@ -406,6 +520,8 @@ def main():
             f"Price: {result['price']}",
             f"RSI: {result['rsi']:.1f}",
             f"Volume: {result['volume_ratio']:.2f}x",
+            f"Ichimoku 15m: {result['ichimoku_15m']}",
+            f"Ichimoku 1h: {result['ichimoku_1h']}",
             f"Support: {result['support']}",
             f"Resistance: {result['resistance']}",
             f"Estimated Long RR: {result['long_rr']:.2f}",
