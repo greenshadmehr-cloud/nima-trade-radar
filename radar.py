@@ -335,6 +335,7 @@ def analyze_symbol(symbol):
     elif 50 < current_rsi <= 55:
         short_score += 5
 
+    
     # 6. Direction-specific risk / reward
     recent_range = resistance - support
 
@@ -363,35 +364,24 @@ def analyze_symbol(symbol):
     )
 
     long_risk = price - long_stop
-short_risk = short_stop - price
+    short_risk = short_stop - price
 
-long_rr = 0.0
-short_rr = 0.0
+    long_rr = 0.0
+    short_rr = 0.0
 
-if (
-    long_risk > 0
-    and long_target > price
-    and long_stop < price
-):
-    long_rr = (long_target - price) / long_risk
+    if (
+        long_risk > 0
+        and long_target > price
+        and long_stop < price
+    ):
+        long_rr = (long_target - price) / long_risk
 
-if (
-    short_risk > 0
-    and short_target < price
-    and short_stop > price
-):
-    short_rr = (price - short_target) / short_risk
-    long_rr = (
-        (long_target - price) / long_risk
-        if long_risk > 0 and long_target > price
-        else 0
-    )
-
-    short_rr = (
-        (price - short_target) / short_risk
-        if short_risk > 0 and short_target < price
-        else 0
-    )
+    if (
+        short_risk > 0
+        and short_target < price
+        and short_stop > price
+    ):
+        short_rr = (price - short_target) / short_risk
 
     if long_rr >= 2:
         long_score += 10
@@ -417,7 +407,7 @@ if (
         signal = "NO ENTRY"
         score = max(long_score, short_score)
 
-         return {
+    return {
         "symbol": symbol,
         "price": price,
         "signal": signal,
@@ -432,7 +422,7 @@ if (
         "long_rr": long_rr,
         "short_rr": short_rr,
         "long_risk": long_risk,
-"short_risk": short_risk,
+        "short_risk": short_risk,
         "ichimoku_15m": (
             "BULLISH" if ichi15["bullish"]
             else "BEARISH" if ichi15["bearish"]
@@ -444,6 +434,7 @@ if (
             else "NEUTRAL"
         )
     }
+
 
 
 
