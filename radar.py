@@ -274,19 +274,39 @@ def analyze_symbol(symbol):
     long_score = 0
     short_score = 0
 
+    
+    # Score breakdown initialization
+    long_breakdown = {
+        "trend": 0,
+        "support_resistance": 0,
+        "breakout": 0,
+        "volume": 0,
+        "momentum": 0,
+        "risk_reward": 0
+    }
+
+    short_breakdown = {
+        "trend": 0,
+        "support_resistance": 0,
+        "breakout": 0,
+        "volume": 0,
+        "momentum": 0,
+        "risk_reward": 0
+    }
+
     # 1. Ichimoku trend: maximum 20
     if ichi15["bullish"] and ichi1h["bullish"]:
-        long_score += 20
+        long_breakdown["trend"] = 20
 
     if ichi15["bearish"] and ichi1h["bearish"]:
-        short_score += 20
+        short_breakdown["trend"] = 20
 
     # 2. Support / resistance: maximum 20
     if abs(price - support) <= current_atr * 0.6:
-        long_score += 20
+        long_breakdown["support_resistance"] = 20
 
     if abs(price - resistance) <= current_atr * 0.6:
-        short_score += 20
+        short_breakdown["support_resistance"] = 20
 
     # 3. Breakout / retest: maximum 25
     long_breakout = (
@@ -306,10 +326,10 @@ def analyze_symbol(symbol):
     )
 
     if long_breakout:
-        long_score += 25
+        long_breakdown["breakout"] = 25
 
     if short_breakout:
-        short_score += 25
+        short_breakdown["breakout"] = 25
 
     # 4. Volume confirmation: maximum 15
     if volume_ratio >= 1.5:
@@ -321,19 +341,23 @@ def analyze_symbol(symbol):
     else:
         volume_score = 0
 
-    long_score += volume_score
-    short_score += volume_score
+    long_breakdown["volume"] = volume_score
+    short_breakdown["volume"] = volume_score
 
     # 5. RSI momentum: maximum 10
     if 50 <= current_rsi <= 68:
-        long_score += 10
+        long_breakdown["momentum"] = 10
     elif 45 <= current_rsi < 50:
-        long_score += 5
+        long_breakdown["momentum"] = 5
 
     if 32 <= current_rsi <= 50:
-        short_score += 10
+        short_breakdown["momentum"] = 10
     elif 50 < current_rsi <= 55:
-        short_score += 5
+        short_breakdown["momentum"] = 5
+
+    # Calculate total scores
+    long_score = sum(long_breakdown.values())
+    short_score = sum(short_breakdown.values())
 
     
     # 6. Direction-specific risk / reward
@@ -384,14 +408,17 @@ def analyze_symbol(symbol):
         short_rr = (price - short_target) / short_risk
 
     if long_rr >= 2:
-        long_score += 10
-    elif long_rr >= 1.5:
-        long_score += 5
+    long_breakdown["risk_reward"] = 10
+elif long_rr >= 1.5:
+    long_breakdown["risk_reward"] = 5
 
     if short_rr >= 2:
-        short_score += 10
-    elif short_rr >= 1.5:
-        short_score += 5
+    short_breakdown["risk_reward"] = 10
+elif short_rr >= 1.5:
+    short_breakdown["risk_reward"] = 5
+
+long_score = sum(long_breakdown.values())
+short_score = sum(short_breakdown.values())
 
     # Final classification
     if long_score >= 80 and long_score > short_score:
@@ -408,6 +435,8 @@ def analyze_symbol(symbol):
         score = max(long_score, short_score)
 
     return {
+        "long_breakdown": long_breakdown,
+        "short_breakdown": short_breakdown,
         "symbol": symbol,
         "price": price,
         "signal": signal,
