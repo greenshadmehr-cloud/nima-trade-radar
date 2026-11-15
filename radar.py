@@ -363,8 +363,24 @@ def analyze_symbol(symbol):
     )
 
     long_risk = price - long_stop
-    short_risk = short_stop - price
+short_risk = short_stop - price
 
+long_rr = 0.0
+short_rr = 0.0
+
+if (
+    long_risk > 0
+    and long_target > price
+    and long_stop < price
+):
+    long_rr = (long_target - price) / long_risk
+
+if (
+    short_risk > 0
+    and short_target < price
+    and short_stop > price
+):
+    short_rr = (price - short_target) / short_risk
     long_rr = (
         (long_target - price) / long_risk
         if long_risk > 0 and long_target > price
@@ -415,6 +431,8 @@ def analyze_symbol(symbol):
         "resistance": resistance,
         "long_rr": long_rr,
         "short_rr": short_rr,
+        "long_risk": long_risk,
+"short_risk": short_risk,
         "ichimoku_15m": (
             "BULLISH" if ichi15["bullish"]
             else "BEARISH" if ichi15["bearish"]
