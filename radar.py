@@ -893,9 +893,11 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
         net = gross - fee_round_trip - slippage_round_trip
         risk_pct = risk / entry
         r_multiple = net / risk_pct if risk_pct > 0 else 0.0
-        trades.append({"direction": direction, "entry": entry, "exit": exit_price,
+        trades.append({"symbol": symbol, "direction": direction, "entry": entry, "exit": exit_price,
                        "reason": exit_reason, "net_pct": net * 100, "r": r_multiple,
-                       "bars": exit_index - i})
+                       "bars": exit_index - i,
+                       "entry_time": int(c3[i + 1][0] // 1000),
+                       "exit_time": int(c3[exit_index][0] // 1000)})
         i = exit_index + 1  # no overlapping positions
 
     wins = [t for t in trades if t["net_pct"] > 0]
@@ -946,6 +948,155 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
     return {"trades": trades, "win_rate": (len(wins) / len(trades) * 100) if trades else 0.0,
             "net_pct": total_net, "average_r": avg_r, "profit_factor": profit_factor}
 
+
+
+def portfolio_backtest(days=14, max_symbols=30, max_concurrent=3,
+                       risk_per_trade=0.005, fee_round_trip=0.001,
+                       slippage_round_trip=0.0004):
+    """
+    Portfolio simulation using the current eligible top-volume universe.
+    Each accepted trade risks a fixed fraction of realized equity.
+    Signals are chronological; no more than max_concurrent positions overlap.
+    """
+    import contextlib
+    import io
+
+    if max_concurrent < 1:
+        raise ValueError("max_concurrent must be at least 1")
+    if not 0 < risk_per_trade < 0.1:
+        raise ValueError("risk_per_trade must be between 0 and 0.1")
+
+    universe = get_top_contracts()[:max_symbols]
+    print(f"\nNIMA SCALP RADAR — PORTFOLIO BACKTEST")
+    print(f"Period: {days} days | Universe: {len(universe)} current eligible contracts")
+    print(f"Universe rule: USDT linear perpetuals, last price <= $50, top {max_symbols} by 24h volume")
+    print(f"Risk per trade: {risk_per_trade*100:.2f}% of realized equity | Max concurrent: {max_concurrent}")
+    print(f"Fees: {fee_round_trip*100:.3f}% round trip | Slippage: {slippage_round_trip*100:.3f}% round trip")
+    print("\nDownloading and testing symbols...")
+
+    all_trades = []
+    failed = []
+    for index, item in enumerate(universe, 1):
+        symbol = item["symbol"]
+        print(f"[{index}/{len(universe)}] {symbol} ...", end=" ", flush=True)
+        try:
+            # Suppress each single-symbol diagnostic report; retain its trade records.
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = backtest_symbol(
+                    symbol, days, fee_round_trip, slippage_round_trip
+                )
+            symbol_trades = result.get("trades", [])
+            all_trades.extend(symbol_trades)
+            print(f"{len(symbol_trades)} trades")
+        except Exception as exc:
+            failed.append((symbol, str(exc)[:160]))
+            print(f"ERROR: {str(exc)[:120]}")
+
+    all_trades.sort(key=lambda t: (t["entry_time"], t["exit_time"], t["symbol"]))
+
+    # Realized-equity accounting. Existing positions keep the risk amount
+    # fixed at entry; exits are booked before any new entry at the same time.
+    equity = 100.0
+    peak = 100.0
+    max_drawdown = 0.0
+    active = []
+    accepted = []
+    skipped_capacity = 0
+    exit_events = []
+
+    for trade in all_trades:
+        still_active = []
+        for position in active:
+            if position["exit_time"] <= trade["entry_time"]:
+                pnl = position["risk_cash"] * position["r"]
+                equity += pnl
+                exit_events.append((position["exit_time"], equity))
+                peak = max(peak, equity)
+                if peak > 0:
+                    max_drawdown = max(max_drawdown, (peak - equity) / peak * 100)
+            else:
+                still_active.append(position)
+        active = still_active
+
+        if len(active) >= max_concurrent:
+            skipped_capacity += 1
+            continue
+
+        risk_cash = equity * risk_per_trade
+        position = dict(trade)
+        position["risk_cash"] = risk_cash
+        position["pnl_cash"] = risk_cash * float(trade["r"])
+        active.append(position)
+        accepted.append(position)
+
+    for position in sorted(active, key=lambda x: x["exit_time"]):
+        equity += position["pnl_cash"]
+        exit_events.append((position["exit_time"], equity))
+        peak = max(peak, equity)
+        if peak > 0:
+            max_drawdown = max(max_drawdown, (peak - equity) / peak * 100)
+
+    wins = [t for t in accepted if t["pnl_cash"] > 0]
+    losses = [t for t in accepted if t["pnl_cash"] <= 0]
+    total_pnl = equity - 100.0
+    win_rate = len(wins) / len(accepted) * 100 if accepted else 0.0
+    gross_profit = sum(t["pnl_cash"] for t in wins)
+    gross_loss = abs(sum(t["pnl_cash"] for t in losses))
+    profit_factor = gross_profit / gross_loss if gross_loss else (
+        float("inf") if gross_profit else 0.0
+    )
+
+    by_symbol = {}
+    for trade in accepted:
+        row = by_symbol.setdefault(trade["symbol"], {"trades": 0, "wins": 0, "pnl": 0.0})
+        row["trades"] += 1
+        row["wins"] += int(trade["pnl_cash"] > 0)
+        row["pnl"] += trade["pnl_cash"]
+
+    print("\nPORTFOLIO RESULTS")
+    print(f"Symbols tested: {len(universe) - len(failed)}/{len(universe)} | Failed: {len(failed)}")
+    print(f"Raw candidate trades: {len(all_trades)}")
+    print(f"Accepted portfolio trades: {len(accepted)} | Skipped (concurrency cap): {skipped_capacity}")
+    print(f"Wins: {len(wins)} | Losses: {len(losses)} | Win rate: {win_rate:.1f}%")
+    print(f"Starting equity: 100.00 | Ending equity: {equity:.3f}")
+    print(f"Net portfolio return: {total_pnl:.3f}%")
+    print(f"Maximum closed-equity drawdown: {max_drawdown:.3f}%")
+    print(f"Profit factor: {profit_factor:.3f}")
+
+    print("\nPER-SYMBOL RESULTS")
+    for symbol, row in sorted(by_symbol.items(), key=lambda x: x[1]["pnl"], reverse=True):
+        print(f"{symbol} | trades={row['trades']} | wins={row['wins']} | "
+              f"win_rate={(row['wins']/row['trades']*100):.1f}% | "
+              f"equity_PnL={row['pnl']:.3f}")
+
+    print("\nLAST 15 PORTFOLIO TRADES")
+    for trade in sorted(accepted, key=lambda t: t["exit_time"])[-15:]:
+        stamp = datetime.fromtimestamp(trade["entry_time"], timezone.utc).strftime("%m-%d %H:%M")
+        print(f"{stamp} UTC | {trade['symbol']} | {trade['direction']} | "
+              f"{trade['reason']} | {trade['r']:.2f}R | "
+              f"PnL={trade['pnl_cash']:.3f} equity units")
+
+    if failed:
+        print("\nFAILED SYMBOLS")
+        for symbol, error in failed:
+            print(f"{symbol}: {error}")
+
+    print("\nIMPORTANT LIMITATIONS")
+    print("- Universe is selected using today's price and 24h volume; this can create survivorship/look-ahead bias.")
+    print("- Equity curve is closed-trade based; unrealized intratrade drawdown is not measured.")
+    print("- Fixed fractional risk is a simulation, not an exchange margin/liquidation model.")
+    print("- Historical fills, funding, market impact, and symbol delistings may differ from assumptions.")
+
+    return {
+        "symbols_tested": len(universe) - len(failed),
+        "raw_trades": len(all_trades),
+        "accepted_trades": len(accepted),
+        "win_rate": win_rate,
+        "net_return_pct": total_pnl,
+        "max_drawdown_pct": max_drawdown,
+        "profit_factor": profit_factor,
+        "failed": failed,
+    }
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -1081,13 +1232,24 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="NIMA SCALP RADAR")
     parser.add_argument("--backtest", metavar="SYMBOL", help="Run historical backtest for one MEXC USDT perpetual symbol")
+    parser.add_argument("--portfolio-backtest", action="store_true", help="Run portfolio backtest on current top eligible contracts")
     parser.add_argument("--days", type=int, default=14, help="Backtest history window in days (default: 14)")
+    parser.add_argument("--max-symbols", type=int, default=30, help="Maximum current eligible contracts for portfolio backtest")
+    parser.add_argument("--max-concurrent", type=int, default=3, help="Maximum overlapping portfolio positions (default: 3)")
+    parser.add_argument("--risk-per-trade", type=float, default=0.005, help="Equity risk per trade (default: 0.005 = 0.5%%)")
     parser.add_argument("--fee", type=float, default=0.001, help="Assumed round-trip fee as decimal (default: 0.001 = 0.10%%)")
     parser.add_argument("--slippage", type=float, default=0.0004, help="Assumed round-trip slippage as decimal (default: 0.0004 = 0.04%%)")
     args = parser.parse_args()
-    if args.backtest:
-        if args.days < 5 or args.days > 90:
-            parser.error("--days must be between 5 and 90")
+    if args.days < 5 or args.days > 90:
+        parser.error("--days must be between 5 and 90")
+    if args.portfolio_backtest and args.backtest:
+        parser.error("Use either --portfolio-backtest or --backtest, not both")
+    if args.portfolio_backtest:
+        if args.max_symbols < 1 or args.max_symbols > TOP_N:
+            parser.error(f"--max-symbols must be between 1 and {TOP_N}")
+        portfolio_backtest(args.days, args.max_symbols, args.max_concurrent,
+                           args.risk_per_trade, args.fee, args.slippage)
+    elif args.backtest:
         backtest_symbol(args.backtest.upper(), args.days, args.fee, args.slippage)
     else:
         main()
