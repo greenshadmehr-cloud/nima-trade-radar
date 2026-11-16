@@ -594,6 +594,21 @@ def analyze_candles(symbol, c3, c15, c45):
         "ema_extension_atr": ema_extension_atr,
         "candle_range_atr": candle_range_atr,
         "late_reason": "; ".join(late_reasons) if late_reasons else "",
+        "diagnostic": {
+            "long_trend": bool(ichi15["bullish"] and ichi45["bullish"]),
+            "short_trend": bool(ichi15["bearish"] and ichi45["bearish"]),
+            "long_near_level": bool(long_near_level),
+            "short_near_level": bool(short_near_level),
+            "long_rsi_ok": bool(48 <= current_rsi <= 68),
+            "short_rsi_ok": bool(32 <= current_rsi <= 52),
+            "volume_ok": bool(volume_ratio >= 0.80),
+            "long_score_ok": bool(long_score >= 65 and long_score > short_score),
+            "short_score_ok": bool(short_score >= 65 and short_score > long_score),
+            "long_early_candidate": bool(long_early_candidate),
+            "short_early_candidate": bool(short_early_candidate),
+            "trade_plan_valid": bool(trade_plan is not None),
+            "signal": signal
+        },
         "trade_plan": trade_plan
     }
 
@@ -667,6 +682,17 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
         )
 
     trades = []
+    diag = {
+        "evaluated": 0,
+        "long_trend": 0, "short_trend": 0,
+        "long_near_level": 0, "short_near_level": 0,
+        "long_rsi_ok": 0, "short_rsi_ok": 0,
+        "volume_ok": 0,
+        "long_score_ok": 0, "short_score_ok": 0,
+        "long_early_candidate": 0, "short_early_candidate": 0,
+        "plan_valid": 0,
+        "watch": 0, "late_no_trade": 0
+    }
     i = 79
     j15 = 0
     j45 = 0
@@ -686,7 +712,22 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
         hist15 = c15[max(0, j15 - 120):j15]
         hist45 = c45[max(0, j45 - 120):j45]
         result = analyze_candles(symbol, hist3, hist15, hist45)
-        if not result or result.get("signal") not in ("EARLY LONG SETUP", "EARLY SHORT SETUP"):
+        if not result:
+            i += 1
+            continue
+
+        diag["evaluated"] += 1
+        flags = result["diagnostic"]
+        for key in ("long_trend", "short_trend", "long_near_level", "short_near_level",
+                    "long_rsi_ok", "short_rsi_ok", "volume_ok", "long_score_ok",
+                    "short_score_ok", "long_early_candidate", "short_early_candidate"):
+            diag[key] += int(flags[key])
+        if flags["signal"] == "WATCH":
+            diag["watch"] += 1
+        if flags["signal"] == "LATE ENTRY — NO TRADE":
+            diag["late_no_trade"] += 1
+
+        if result.get("signal") not in ("EARLY LONG SETUP", "EARLY SHORT SETUP"):
             i += 1
             continue
 
@@ -694,6 +735,7 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
         if not plan:
             i += 1
             continue
+        diag["plan_valid"] += 1
 
         direction = result["setup_direction"]
         entry = float(c3[i + 1][1])  # next candle open; avoids assuming fill at signal close
@@ -758,6 +800,15 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
     print(f"Symbol: {symbol} | Period: {days} days")
     print(f"Closed candles: 3m={len(c3)}, 15m={len(c15)}, 45m={len(c45)}")
     print(f"Trades: {len(trades)} | Wins: {len(wins)} | Losses: {len(losses)}")
+    print("\nDIAGNOSTIC FILTER COUNTS (overlapping counts; not additive):")
+    print(f"Evaluated candles: {diag['evaluated']}")
+    print(f"Trend aligned | LONG: {diag['long_trend']} | SHORT: {diag['short_trend']}")
+    print(f"Near level     | LONG: {diag['long_near_level']} | SHORT: {diag['short_near_level']}")
+    print(f"RSI in range   | LONG: {diag['long_rsi_ok']} | SHORT: {diag['short_rsi_ok']}")
+    print(f"Volume >= 0.8x: {diag['volume_ok']}")
+    print(f"Score >= 65    | LONG: {diag['long_score_ok']} | SHORT: {diag['short_score_ok']}")
+    print(f"Early candidate| LONG: {diag['long_early_candidate']} | SHORT: {diag['short_early_candidate']}")
+    print(f"Valid trade plan: {diag['plan_valid']} | WATCH: {diag['watch']} | Late rejected: {diag['late_no_trade']}")
     print(f"Win rate: {(len(wins) / len(trades) * 100) if trades else 0:.1f}%")
     print(f"Net result: {total_net:.2f}% | Average R: {avg_r:.2f} | Profit factor: {profit_factor:.2f}")
     print(f"Assumed round-trip fees: {fee_round_trip*100:.3f}% | Slippage: {slippage_round_trip*100:.3f}%")
