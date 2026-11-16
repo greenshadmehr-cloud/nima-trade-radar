@@ -340,18 +340,25 @@ def build_trade_plan(direction, entry, support, resistance, current_atr, min_rr=
     buffer = current_atr * 0.15
     max_risk = current_atr * 1.50
     min_risk = current_atr * 0.40
+    tolerance = max(current_atr * 1e-9, 1e-12)  # absorb floating-point noise at exact ATR limits
     if direction == "LONG":
         stop = max(support - buffer, entry - max_risk)
         risk = entry - stop
-        if risk < min_risk or risk > max_risk or stop >= entry:
+        if risk < min_risk - tolerance or risk > max_risk + tolerance or stop >= entry:
             return None
+        if risk > max_risk:
+            stop = entry - max_risk
+            risk = max_risk
         target = entry + risk * min_rr
         reward = target - entry
     elif direction == "SHORT":
         stop = min(resistance + buffer, entry + max_risk)
         risk = stop - entry
-        if risk < min_risk or risk > max_risk or stop <= entry:
+        if risk < min_risk - tolerance or risk > max_risk + tolerance or stop <= entry:
             return None
+        if risk > max_risk:
+            stop = entry + max_risk
+            risk = max_risk
         target = entry - risk * min_rr
         reward = entry - target
     else:
@@ -370,6 +377,7 @@ def diagnose_trade_plan(direction, entry, support, resistance, current_atr, min_
     buffer = current_atr * 0.15
     max_risk = current_atr * 1.50
     min_risk = current_atr * 0.40
+    tolerance = max(current_atr * 1e-9, 1e-12)  # match build_trade_plan boundary handling
     if direction == "LONG":
         stop = max(support - buffer, entry - max_risk)
         risk = entry - stop
@@ -386,12 +394,19 @@ def diagnose_trade_plan(direction, entry, support, resistance, current_atr, min_
         return {"valid": False, "reason": "INVALID_DIRECTION", "risk_atr": None,
                 "sl_atr": None, "tp_atr": None, "rr": None, "stop": None, "target": None}
 
+    if risk > max_risk and risk <= max_risk + tolerance:
+        risk = max_risk
+        if direction == "LONG":
+            stop = entry - max_risk
+        else:
+            stop = entry + max_risk
+        reward = abs(target - entry)
     risk_atr = risk / current_atr
     if wrong_side or risk <= 0:
         reason = "STOP_ON_WRONG_SIDE"
-    elif risk < min_risk:
+    elif risk < min_risk - tolerance:
         reason = "RISK_BELOW_0_40_ATR"
-    elif risk > max_risk:
+    elif risk > max_risk + tolerance:
         reason = "RISK_ABOVE_1_50_ATR"
     elif reward <= 0:
         reason = "INVALID_REWARD"
