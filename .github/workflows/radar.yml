@@ -1,3 +1,4 @@
+
 name: NIMA SCALP RADAR
 
 on:
@@ -6,23 +7,38 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Choose live scan or historical backtest'
+        description: 'Choose live scan, single backtest or portfolio backtest'
         required: true
         type: choice
         options:
           - scan
           - backtest
+          - portfolio
         default: scan
+
       symbol:
-        description: 'MEXC USDT perpetual symbol for backtest (example: BTC_USDT)'
+        description: 'MEXC USDT perpetual symbol for single backtest'
         required: false
         type: string
         default: BTC_USDT
+
       days:
         description: 'Backtest history in days (5 to 90)'
         required: true
         type: number
         default: 14
+
+      max_symbols:
+        description: 'Maximum symbols for portfolio backtest (1 to 30)'
+        required: true
+        type: number
+        default: 30
+
+      max_concurrent:
+        description: 'Maximum concurrent positions (1 to 30)'
+        required: true
+        type: number
+        default: 3
 
 permissions:
   contents: read
@@ -34,7 +50,8 @@ concurrency:
 jobs:
   radar:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -62,12 +79,47 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [[ ! "$BACKTEST_SYMBOL" =~ ^[A-Za-z0-9_-]+_USDT$ ]]; then
-            echo "Invalid symbol. Use a MEXC USDT perpetual symbol such as BTC_USDT."
+            echo "Invalid symbol. Use a symbol such as BTC_USDT."
             exit 1
           fi
+
           if ! [[ "$BACKTEST_DAYS" =~ ^[0-9]+$ ]] || (( BACKTEST_DAYS < 5 || BACKTEST_DAYS > 90 )); then
-            echo "Backtest days must be an integer from 5 to 90."
+            echo "Backtest days must be between 5 and 90."
             exit 1
           fi
+
           python radar.py --backtest "$BACKTEST_SYMBOL" --days "$BACKTEST_DAYS"
+
+      - name: Run portfolio backtest
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'portfolio'
+        env:
+          BACKTEST_DAYS: ${{ inputs.days }}
+          MAX_SYMBOLS: ${{ inputs.max_symbols }}
+          MAX_CONCURRENT: ${{ inputs.max_concurrent }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$BACKTEST_DAYS" =~ ^[0-9]+$ ]] || (( BACKTEST_DAYS < 5 || BACKTEST_DAYS > 90 )); then
+            echo "Backtest days must be between 5 and 90."
+            exit 1
+          fi
+
+          if ! [[ "$MAX_SYMBOLS" =~ ^[0-9]+$ ]] || (( MAX_SYMBOLS < 1 || MAX_SYMBOLS > 30 )); then
+            echo "Maximum symbols must be between 1 and 30."
+            exit 1
+          fi
+
+          if ! [[ "$MAX_CONCURRENT" =~ ^[0-9]+$ ]] || (( MAX_CONCURRENT < 1 || MAX_CONCURRENT > 30 )); then
+            echo "Maximum concurrent positions must be between 1 and 30."
+            exit 1
+          fi
+
+          python radar.py \
+            --portfolio-backtest \
+            --days "$BACKTEST_DAYS" \
+            --max-symbols "$MAX_SYMBOLS" \
+            --max-concurrent "$MAX_CONCURRENT" \
+            --risk-per-trade 0.005
