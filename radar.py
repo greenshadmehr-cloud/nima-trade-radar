@@ -362,6 +362,51 @@ def build_trade_plan(direction, entry, support, resistance, current_atr, min_rr=
             "risk_amount": risk, "reward_amount": reward, "rr": reward / risk}
 
 
+def diagnose_trade_plan(direction, entry, support, resistance, current_atr, min_rr=2.0):
+    """Explain exactly why the unchanged trade-plan rules accept/reject a candidate."""
+    if current_atr is None or current_atr <= 0 or entry <= 0:
+        return {"valid": False, "reason": "INVALID_ATR_OR_ENTRY", "risk_atr": None,
+                "sl_atr": None, "tp_atr": None, "rr": None, "stop": None, "target": None}
+    buffer = current_atr * 0.15
+    max_risk = current_atr * 1.50
+    min_risk = current_atr * 0.40
+    if direction == "LONG":
+        stop = max(support - buffer, entry - max_risk)
+        risk = entry - stop
+        wrong_side = stop >= entry
+        target = entry + risk * min_rr
+        reward = target - entry
+    elif direction == "SHORT":
+        stop = min(resistance + buffer, entry + max_risk)
+        risk = stop - entry
+        wrong_side = stop <= entry
+        target = entry - risk * min_rr
+        reward = entry - target
+    else:
+        return {"valid": False, "reason": "INVALID_DIRECTION", "risk_atr": None,
+                "sl_atr": None, "tp_atr": None, "rr": None, "stop": None, "target": None}
+
+    risk_atr = risk / current_atr
+    if wrong_side or risk <= 0:
+        reason = "STOP_ON_WRONG_SIDE"
+    elif risk < min_risk:
+        reason = "RISK_BELOW_0_40_ATR"
+    elif risk > max_risk:
+        reason = "RISK_ABOVE_1_50_ATR"
+    elif reward <= 0:
+        reason = "INVALID_REWARD"
+    elif risk > 0 and reward / risk < min_rr:
+        reason = "RR_BELOW_2_00"
+    else:
+        reason = "VALID"
+
+    valid = reason == "VALID"
+    return {"valid": valid, "reason": reason, "risk_atr": risk_atr,
+            "sl_atr": risk_atr, "tp_atr": (reward / current_atr),
+            "rr": (reward / risk if risk > 0 else None),
+            "stop": stop, "target": target}
+
+
 def analyze_candles(symbol, c3, c15, c45):
     """Analyze already-closed 3m/15m/45m candles; shared by live scan and backtest."""
     if len(c3) < 80 or len(c15) < 80 or len(c45) < 80:
@@ -691,6 +736,17 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
         "long_score_ok": 0, "short_score_ok": 0,
         "long_early_candidate": 0, "short_early_candidate": 0,
         "plan_valid": 0,
+        "candidate_plans": 0,
+        "candidate_plan_valid": 0,
+        "plan_invalid_atr": 0,
+        "plan_wrong_side": 0,
+        "plan_risk_below": 0,
+        "plan_risk_above": 0,
+        "plan_invalid_reward": 0,
+        "plan_rr_below": 0,
+        "candidate_risk_atr": [],
+        "candidate_tp_atr": [],
+        "candidate_examples": [],
         "watch": 0, "late_no_trade": 0
     }
     i = 79
@@ -726,6 +782,45 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
             diag["watch"] += 1
         if flags["signal"] == "LATE ENTRY — NO TRADE":
             diag["late_no_trade"] += 1
+
+        # Diagnose every early candidate independently of score ranking/selection.
+        # This reveals whether the plan builder itself is the bottleneck.
+        for direction, flag_name in (("LONG", "long_early_candidate"), ("SHORT", "short_early_candidate")):
+            if not flags[flag_name]:
+                continue
+            detail = diagnose_trade_plan(
+                direction, float(result["price"]), float(result["support"]),
+                float(result["resistance"]), float(result["atr"]), min_rr=2.0
+            )
+            diag["candidate_plans"] += 1
+            if detail["valid"]:
+                diag["candidate_plan_valid"] += 1
+            else:
+                reason_to_key = {
+                    "INVALID_ATR_OR_ENTRY": "plan_invalid_atr",
+                    "STOP_ON_WRONG_SIDE": "plan_wrong_side",
+                    "RISK_BELOW_0_40_ATR": "plan_risk_below",
+                    "RISK_ABOVE_1_50_ATR": "plan_risk_above",
+                    "INVALID_REWARD": "plan_invalid_reward",
+                    "RR_BELOW_2_00": "plan_rr_below",
+                }
+                key = reason_to_key.get(detail["reason"])
+                if key:
+                    diag[key] += 1
+            if detail["risk_atr"] is not None and detail["risk_atr"] > 0:
+                diag["candidate_risk_atr"].append(detail["risk_atr"])
+            if detail["tp_atr"] is not None and detail["tp_atr"] > 0:
+                diag["candidate_tp_atr"].append(detail["tp_atr"])
+            if len(diag["candidate_examples"]) < 12:
+                stamp = datetime.fromtimestamp(
+                    int(signal_candle[0] // 1000), timezone.utc
+                ).strftime("%Y-%m-%d %H:%M UTC")
+                diag["candidate_examples"].append({
+                    "time": stamp, "direction": direction, "entry": result["price"],
+                    "atr": result["atr"], "reason": detail["reason"],
+                    "risk_atr": detail["risk_atr"], "tp_atr": detail["tp_atr"],
+                    "rr": detail["rr"], "stop": detail["stop"], "target": detail["target"]
+                })
 
         if result.get("signal") not in ("EARLY LONG SETUP", "EARLY SHORT SETUP"):
             i += 1
@@ -808,7 +903,23 @@ def backtest_symbol(symbol, days=14, fee_round_trip=0.001, slippage_round_trip=0
     print(f"Volume >= 0.8x: {diag['volume_ok']}")
     print(f"Score >= 65    | LONG: {diag['long_score_ok']} | SHORT: {diag['short_score_ok']}")
     print(f"Early candidate| LONG: {diag['long_early_candidate']} | SHORT: {diag['short_early_candidate']}")
-    print(f"Valid trade plan: {diag['plan_valid']} | WATCH: {diag['watch']} | Late rejected: {diag['late_no_trade']}")
+    print(f"Selected-signal valid plans: {diag['plan_valid']} | WATCH: {diag['watch']} | Late rejected: {diag['late_no_trade']}")
+    print("\nTRADE-PLAN DIAGNOSTICS (all early candidates, both directions):")
+    print(f"Candidates checked: {diag['candidate_plans']} | Valid plans: {diag['candidate_plan_valid']}")
+    print(f"Rejected | invalid ATR/entry: {diag['plan_invalid_atr']} | stop wrong side: {diag['plan_wrong_side']}")
+    print(f"Rejected | risk < 0.40 ATR: {diag['plan_risk_below']} | risk > 1.50 ATR: {diag['plan_risk_above']}")
+    print(f"Rejected | invalid reward: {diag['plan_invalid_reward']} | RR < 2.00: {diag['plan_rr_below']}")
+    if diag["candidate_risk_atr"]:
+        vals = diag["candidate_risk_atr"]
+        print(f"Risk distance (ATR): min={min(vals):.3f} | avg={sum(vals)/len(vals):.3f} | max={max(vals):.3f}")
+    if diag["candidate_tp_atr"]:
+        vals = diag["candidate_tp_atr"]
+        print(f"Target distance (ATR): min={min(vals):.3f} | avg={sum(vals)/len(vals):.3f} | max={max(vals):.3f}")
+    print("\nFIRST CANDIDATE EXAMPLES:")
+    for item in diag["candidate_examples"]:
+        risk_text = f"{item['risk_atr']:.3f} ATR" if item["risk_atr"] is not None else "n/a"
+        rr_text = f"{item['rr']:.2f}" if item["rr"] is not None else "n/a"
+        print(f"{item['time']} | {item['direction']} | {item['reason']} | risk={risk_text} | RR={rr_text} | SL={item['stop']} | TP={item['target']}")
     print(f"Win rate: {(len(wins) / len(trades) * 100) if trades else 0:.1f}%")
     print(f"Net result: {total_net:.2f}% | Average R: {avg_r:.2f} | Profit factor: {profit_factor:.2f}")
     print(f"Assumed round-trip fees: {fee_round_trip*100:.3f}% | Slippage: {slippage_round_trip*100:.3f}%")
