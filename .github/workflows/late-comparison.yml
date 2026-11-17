@@ -31,4 +31,4 @@ jobs:
       - name: Install dependencies
         run: pip install requests
       - name: Run late-signal comparison
-        run: python radar_v2.py --late-comparison "${{ inputs.symbol }}" --days "${{ inputs.days }}"
+        run: python radar_v2.py --late-comparison-all --days 30 --max-symbols 30
