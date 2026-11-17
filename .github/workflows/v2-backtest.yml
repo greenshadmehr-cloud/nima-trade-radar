@@ -21,4 +21,4 @@ jobs:
         run: pip install requests
 
       - name: Run V2 Backtest
-        run: python radar_v2.py --portfolio-backtest --days 14 --max-symbols 5
+        run: python radar_V2.py --portfolio-backtest --days 14 --max-symbols 5
