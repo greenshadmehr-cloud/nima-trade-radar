@@ -1,0 +1,24 @@
+
+name: NIMA V2 Backtest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run V2 Backtest
+        run: python radar_v2.py --portfolio-backtest --days 14 --max-symbols 5
