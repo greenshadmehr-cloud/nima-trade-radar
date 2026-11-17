@@ -2,15 +2,14 @@
 import time
 import requests
 from bisect import bisect_right
+from datetime import datetime, timedelta, timezone
 
-# =====================================================
+# =========================================================
 # NIMA ICHIMOKU SCALPER V2
-# MEXC USDT Perpetual Futures
-# BACKTEST ONLY - NO LIVE ORDERS
-# =====================================================
+# Research / Backtest only - NO live orders
+# =========================================================
 
 BASE_URL = "https://contract.mexc.com"
-TIMEOUT = 25
 
 SYMBOLS = [
     "BTC_USDT",
@@ -21,54 +20,41 @@ SYMBOLS = [
 ]
 
 DAYS = 30
-
-TENKAN = 9
-KIJUN = 26
-SENKOU_B = 52
-
-BREAKOUT_LOOKBACK = 10
-PULLBACK_LOOKBACK = 5
-
 START_BALANCE = 1000.0
+
 RISK_PER_TRADE = 0.005
-MIN_RR = 1.5
+MAX_LEVERAGE = 3.0
+RISK_REWARD = 1.5
 
 FEE_RATE = 0.0005
 SLIPPAGE = 0.0002
 
-SESSION = requests.Session()
+TENKAN_PERIOD = 9
+KIJUN_PERIOD = 26
+SENKOU_B_PERIOD = 52
+
+LOOKBACK_STOP = 10
+MIN_RR = 1.5
+
+REQUEST_TIMEOUT = 20
+REQUEST_DELAY = 0.15
+CANDLE_CHUNK = 400
+
+METHODS = ["BREAKOUT", "PULLBACK"]
 
 
-# =====================================================
-# API
-# =====================================================
+# =========================================================
+# DATA FETCHING
+# =========================================================
 
-def get_json(path, params=None):
-    url = BASE_URL + path
-
-    response = SESSION.get(
-        url,
-        params=params,
-        timeout=TIMEOUT
-    )
-    response.raise_for_status()
-
-    data = response.json()
-
-    if not isinstance(data, dict):
-        raise ValueError("Invalid API response")
-
-    if data.get("success") is False:
-        raise ValueError(str(data))
-
-    return data
-
-
-def fetch_klines(symbol, interval, start_ts, end_ts):
+def fetch_klines(symbol, interval, days):
     """
-    Returns candles:
-    [timestamp_ms, open, high, low, close, volume]
+    Fetch historical MEXC futures candles.
+    MEXC intervals: Min1, Min15
     """
+
+    now = int(time.time())
+    start_time = now - days * 24 * 60 * 60
 
     interval_seconds = {
         "Min1": 60,
@@ -76,531 +62,650 @@ def fetch_klines(symbol, interval, start_ts, end_ts):
     }
 
     if interval not in interval_seconds:
-        raise ValueError("Unsupported interval")
+        raise ValueError(f"Unsupported interval: {interval}")
 
-    step = interval_seconds[interval]
-    chunk_seconds = step * 400
+    seconds = interval_seconds[interval]
+    chunk_seconds = CANDLE_CHUNK * seconds
 
-    candles = {}
-    cursor = start_ts
+    all_rows = []
+    cursor = start_time
 
-    while cursor < end_ts:
-        chunk_end = min(
-            cursor + chunk_seconds,
-            end_ts
-        )
+    while cursor < now:
+        end = min(cursor + chunk_seconds, now)
 
-        data = get_json(
-            f"/api/v1/contract/kline/{symbol}",
-            {
-                "interval": interval,
-                "start": cursor,
-                "end": chunk_end,
-            }
-        )
+        url = f"{BASE_URL}/api/v1/contract/kline/{symbol}"
+        params = {
+            "interval": interval,
+            "start": cursor,
+            "end": end,
+        }
 
-        raw = data.get("data")
-
-        if not isinstance(raw, dict):
-            cursor = chunk_end
-            time.sleep(0.15)
-            continue
-
-        keys = [
-            "time", "open", "high",
-            "low", "close", "vol"
-        ]
-
-        if not all(k in raw for k in keys):
-            raise ValueError(
-                f"Unexpected candle format: {symbol}"
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                timeout=REQUEST_TIMEOUT,
             )
+            response.raise_for_status()
+            payload = response.json()
 
-        count = len(raw["time"])
-
-        for i in range(count):
-            ts = int(raw["time"][i])
-
-            # Exclude candles that have not closed.
-            if ts + step > end_ts:
+            if not payload.get("success"):
+                print(f"API error for {symbol}: {payload}")
+                cursor = end
+                time.sleep(REQUEST_DELAY)
                 continue
 
-            candles[ts * 1000] = [
-                ts * 1000,
-                float(raw["open"][i]),
-                float(raw["high"][i]),
-                float(raw["low"][i]),
-                float(raw["close"][i]),
-                float(raw["vol"][i]),
-            ]
+            data = payload.get("data", {})
 
-        cursor = chunk_end
-        time.sleep(0.15)
+            if not isinstance(data, dict) or not data.get("time"):
+                cursor = end
+                time.sleep(REQUEST_DELAY)
+                continue
 
-    return [
-        candles[t]
-        for t in sorted(candles)
-    ]
+            times = data.get("time", [])
+            opens = data.get("open", [])
+            highs = data.get("high", [])
+            lows = data.get("low", [])
+            closes = data.get("close", [])
+            volumes = data.get("vol", [])
+
+            count = min(
+                len(times),
+                len(opens),
+                len(highs),
+                len(lows),
+                len(closes),
+                len(volumes),
+            )
+
+            for i in range(count):
+                all_rows.append({
+                    "time": int(times[i]),
+                    "open": float(opens[i]),
+                    "high": float(highs[i]),
+                    "low": float(lows[i]),
+                    "close": float(closes[i]),
+                    "volume": float(volumes[i]),
+                })
+
+        except Exception as exc:
+            print(f"Fetch error {symbol} {interval}: {exc}")
+
+        cursor = end
+        time.sleep(REQUEST_DELAY)
+
+    unique = {row["time"]: row for row in all_rows}
+    candles = sorted(unique.values(), key=lambda x: x["time"])
+
+    return candles
 
 
-# =====================================================
-# TIMEFRAME AGGREGATION
-# =====================================================
+# =========================================================
+# CANDLE AGGREGATION
+# =========================================================
 
-def aggregate(candles, source_minutes, target_minutes):
-    if target_minutes % source_minutes != 0:
-        raise ValueError("Invalid timeframe")
-
-    required = target_minutes // source_minutes
-    groups = {}
-
-    for candle in candles:
-        ts = candle[0] // 1000
-
-        bucket = (
-            ts // (target_minutes * 60)
-        ) * (target_minutes * 60)
-
-        groups.setdefault(bucket, []).append(candle)
+def aggregate_candles(candles, factor):
+    """
+    Aggregate candles into larger timeframes.
+    Only complete groups are retained.
+    """
 
     result = []
 
-    for bucket in sorted(groups):
-        group = sorted(
-            groups[bucket],
-            key=lambda x: x[0]
-        )
+    for start in range(0, len(candles) - factor + 1, factor):
+        group = candles[start:start + factor]
 
-        if len(group) != required:
+        if len(group) != factor:
             continue
 
-        expected = [
-            bucket + i * source_minutes * 60
-            for i in range(required)
-        ]
+        expected = group[0]["time"]
+        valid = True
 
-        actual = [
-            c[0] // 1000
-            for c in group
-        ]
+        for i, candle in enumerate(group):
+            if candle["time"] != expected + i * 60:
+                valid = False
+                break
 
-        if actual != expected:
+        if not valid:
             continue
 
-        result.append([
-            bucket * 1000,
-            group[0][1],
-            max(c[2] for c in group),
-            min(c[3] for c in group),
-            group[-1][4],
-            sum(c[5] for c in group),
-        ])
+        result.append({
+            "time": group[0]["time"],
+            "open": group[0]["open"],
+            "high": max(x["high"] for x in group),
+            "low": min(x["low"] for x in group),
+            "close": group[-1]["close"],
+            "volume": sum(x["volume"] for x in group),
+        })
 
     return result
 
 
-# =====================================================
+def aggregate_15m_to_45m(candles):
+    result = []
+
+    for start in range(0, len(candles) - 2, 3):
+        group = candles[start:start + 3]
+
+        if len(group) != 3:
+            continue
+
+        if group[1]["time"] != group[0]["time"] + 900:
+            continue
+
+        if group[2]["time"] != group[0]["time"] + 1800:
+            continue
+
+        result.append({
+            "time": group[0]["time"],
+            "open": group[0]["open"],
+            "high": max(x["high"] for x in group),
+            "low": min(x["low"] for x in group),
+            "close": group[-1]["close"],
+            "volume": sum(x["volume"] for x in group),
+        })
+
+    return result
+
+
+# =========================================================
 # ICHIMOKU
-# =====================================================
+# =========================================================
 
 def midpoint(candles, index, period):
     if index + 1 < period:
         return None
 
-    section = candles[
-        index - period + 1:index + 1
-    ]
+    window = candles[index - period + 1:index + 1]
 
-    highest = max(c[2] for c in section)
-    lowest = min(c[3] for c in section)
+    highest = max(x["high"] for x in window)
+    lowest = min(x["low"] for x in window)
 
     return (highest + lowest) / 2
 
 
-def ichimoku(candles, index):
+def calculate_ichimoku(candles):
+    result = []
+
+    for i, candle in enumerate(candles):
+        tenkan = midpoint(candles, i, TENKAN_PERIOD)
+        kijun = midpoint(candles, i, KIJUN_PERIOD)
+
+        span_a = None
+        span_b = None
+
+        if tenkan is not None and kijun is not None:
+            span_a = (tenkan + kijun) / 2
+
+        span_b = midpoint(candles, i, SENKOU_B_PERIOD)
+
+        result.append({
+            "tenkan": tenkan,
+            "kijun": kijun,
+            "span_a": span_a,
+            "span_b": span_b,
+            "close": candle["close"],
+        })
+
+    return result
+
+
+def get_trend(candles, ichimoku, index):
     """
-    Cloud values are taken from 26 candles earlier.
-    This represents the cloud visible at the current
-    candle and avoids using future information.
+    Use the cloud that is visible at the current candle.
+    Senkou values are shifted 26 candles forward.
     """
 
     if index < 77:
-        return None
-
-    tenkan = midpoint(
-        candles, index, TENKAN
-    )
-
-    kijun = midpoint(
-        candles, index, KIJUN
-    )
-
-    source_index = index - 26
-
-    source_tenkan = midpoint(
-        candles, source_index, TENKAN
-    )
-
-    source_kijun = midpoint(
-        candles, source_index, KIJUN
-    )
-
-    span_a = (
-        source_tenkan + source_kijun
-    ) / 2
-
-    span_b = midpoint(
-        candles, source_index, SENKOU_B
-    )
-
-    if span_b is None:
-        return None
-
-    return {
-        "close": candles[index][4],
-        "tenkan": tenkan,
-        "kijun": kijun,
-        "cloud_top": max(span_a, span_b),
-        "cloud_bottom": min(span_a, span_b),
-    }
-
-
-def trend(candles, index):
-    values = ichimoku(candles, index)
-
-    if values is None:
         return "NEUTRAL"
 
+    current = ichimoku[index]
+    cloud_source = ichimoku[index - KIJUN_PERIOD]
+
     if (
-        values["close"] > values["cloud_top"]
-        and values["tenkan"] > values["kijun"]
+        current["tenkan"] is None
+        or current["kijun"] is None
+        or cloud_source["span_a"] is None
+        or cloud_source["span_b"] is None
+    ):
+        return "NEUTRAL"
+
+    cloud_top = max(
+        cloud_source["span_a"],
+        cloud_source["span_b"],
+    )
+
+    cloud_bottom = min(
+        cloud_source["span_a"],
+        cloud_source["span_b"],
+    )
+
+    close = candles[index]["close"]
+
+    if (
+        close > cloud_top
+        and current["tenkan"] > current["kijun"]
     ):
         return "BULLISH"
 
     if (
-        values["close"] < values["cloud_bottom"]
-        and values["tenkan"] < values["kijun"]
+        close < cloud_bottom
+        and current["tenkan"] < current["kijun"]
     ):
         return "BEARISH"
 
     return "NEUTRAL"
 
 
-# =====================================================
-# HIGHER TIMEFRAME TREND MAP
-# =====================================================
+def build_trend_data(candles):
+    ichimoku = calculate_ichimoku(candles)
 
-def build_trend_map(candles, timeframe_seconds):
-    close_times = []
-    states = []
+    close_times = [
+        candle["time"] + 900
+        for candle in candles
+    ]
 
-    for i in range(len(candles)):
-        close_time = (
-            candles[i][0] // 1000
-            + timeframe_seconds
-        )
+    trends = [
+        get_trend(candles, ichimoku, i)
+        for i in range(len(candles))
+    ]
 
-        close_times.append(close_time)
-        states.append(trend(candles, i))
-
-    return close_times, states
+    return close_times, trends
 
 
-def confirmed_trend(mapping, timestamp):
-    close_times, states = mapping
-
-    # Only candles closed at or before timestamp.
-    index = bisect_right(
-        close_times,
-        timestamp
-    ) - 1
+def get_confirmed_trend(close_times, trends, signal_time):
+    index = bisect_right(close_times, signal_time) - 1
 
     if index < 0:
         return "NEUTRAL"
 
-    return states[index]
+    return trends[index]
 
 
-# =====================================================
-# ENTRY SIGNALS
-# =====================================================
+# =========================================================
+# SIGNALS
+# =========================================================
 
-def make_signal(
-    candles,
-    index,
-    trend15,
-    trend45,
-    method
-):
-    if index < 80:
+def breakout_signal(candles, ichimoku, index):
+    if index < max(77, LOOKBACK_STOP + 2):
         return None
 
     current = candles[index]
     previous = candles[index - 1]
 
-    values = ichimoku(candles, index)
+    data = ichimoku[index]
 
-    if values is None:
+    if data["tenkan"] is None or data["kijun"] is None:
         return None
 
-    side = None
+    recent = candles[index - LOOKBACK_STOP:index]
+
+    recent_high = max(x["high"] for x in recent)
+    recent_low = min(x["low"] for x in recent)
 
     if (
-        trend15 == "BULLISH"
-        and trend45 == "BULLISH"
-        and current[4] > values["cloud_top"]
-        and values["tenkan"] > values["kijun"]
+        current["close"] > recent_high
+        and previous["close"] <= recent_high
+        and data["tenkan"] > data["kijun"]
     ):
-        side = "LONG"
+        return "LONG"
 
-    elif (
-        trend15 == "BEARISH"
-        and trend45 == "BEARISH"
-        and current[4] < values["cloud_bottom"]
-        and values["tenkan"] < values["kijun"]
+    if (
+        current["close"] < recent_low
+        and previous["close"] >= recent_low
+        and data["tenkan"] < data["kijun"]
     ):
-        side = "SHORT"
+        return "SHORT"
 
-    if side is None:
+    return None
+
+
+def pullback_signal(candles, ichimoku, index):
+    if index < max(77, 6):
         return None
 
-    lookback = candles[
-        index - BREAKOUT_LOOKBACK:index
-    ]
+    current = candles[index]
+    data = ichimoku[index]
 
-    recent_high = max(c[2] for c in lookback)
-    recent_low = min(c[3] for c in lookback)
+    if data["tenkan"] is None or data["kijun"] is None:
+        return None
 
+    recent = candles[index - 5:index]
+
+    touched_tenkan = any(
+        x["low"] <= ichimoku[index - 5 + i]["tenkan"]
+        <= x["high"]
+        for i, x in enumerate(recent)
+        if ichimoku[index - 5 + i]["tenkan"] is not None
+    )
+
+    if (
+        touched_tenkan
+        and data["tenkan"] > data["kijun"]
+        and current["close"] > data["tenkan"]
+        and current["close"] > current["open"]
+    ):
+        return "LONG"
+
+    if (
+        touched_tenkan
+        and data["tenkan"] < data["kijun"]
+        and current["close"] < data["tenkan"]
+        and current["close"] < current["open"]
+    ):
+        return "SHORT"
+
+    return None
+
+
+def get_signal(method, candles, ichimoku, index):
     if method == "BREAKOUT":
+        return breakout_signal(candles, ichimoku, index)
 
-        if side == "LONG":
-            valid = (
-                previous[4] <= recent_high
-                and current[4] > recent_high
-            )
-        else:
-            valid = (
-                previous[4] >= recent_low
-                and current[4] < recent_low
-            )
+    if method == "PULLBACK":
+        return pullback_signal(candles, ichimoku, index)
 
-        if not valid:
-            return None
+    return None
 
-    elif method == "PULLBACK":
 
-        recent = candles[
-            index - PULLBACK_LOOKBACK:index + 1
-        ]
+# =========================================================
+# POSITION SIZING
+# =========================================================
 
-        touched_tenkan = any(
-            c[3] <= values["tenkan"] <= c[2]
-            for c in recent
-        )
+def calculate_position_size(balance, entry, stop):
+    distance = abs(entry - stop)
 
-        if side == "LONG":
-            valid = (
-                touched_tenkan
-                and current[4] > values["tenkan"]
-                and current[4] > previous[4]
-            )
-        else:
-            valid = (
-                touched_tenkan
-                and current[4] < values["tenkan"]
-                and current[4] < previous[4]
-            )
+    if distance <= 0 or entry <= 0:
+        return 0.0
 
-        if not valid:
-            return None
+    risk_cash = balance * RISK_PER_TRADE
 
-    else:
-        raise ValueError("Unknown method")
+    # Risk-based quantity
+    quantity = risk_cash / distance
 
-    # Structural stop based on recent candles.
-    structure = candles[index - 9:index + 1]
+    # Maximum notional allowed by leverage
+    max_notional = balance * MAX_LEVERAGE
+    max_quantity = max_notional / entry
 
+    quantity = min(quantity, max_quantity)
+
+    if quantity <= 0:
+        return 0.0
+
+    return quantity
+
+
+# =========================================================
+# BACKTEST HELPERS
+# =========================================================
+
+def apply_entry_slippage(price, side):
     if side == "LONG":
-        stop = min(c[3] for c in structure)
+        return price * (1 + SLIPPAGE)
 
-        if stop >= current[4]:
-            return None
+    return price * (1 - SLIPPAGE)
 
-    else:
-        stop = max(c[2] for c in structure)
 
-        if stop <= current[4]:
-            return None
+def apply_exit_slippage(price, side):
+    if side == "LONG":
+        return price * (1 - SLIPPAGE)
 
-    return {
-        "side": side,
-        "signal_close": current[4],
-        "stop": stop,
+    return price * (1 + SLIPPAGE)
+
+
+def unrealized_pnl(position, mark_price):
+    if position["side"] == "LONG":
+        return (
+            mark_price - position["entry"]
+        ) * position["quantity"]
+
+    return (
+        position["entry"] - mark_price
+    ) * position["quantity"]
+
+
+def close_position(position, exit_price, balance, reason):
+    actual_exit = apply_exit_slippage(
+        exit_price,
+        position["side"],
+    )
+
+    gross_pnl = unrealized_pnl(position, actual_exit)
+
+    exit_fee = (
+        abs(actual_exit * position["quantity"])
+        * FEE_RATE
+    )
+
+    net_pnl = gross_pnl - exit_fee
+
+    balance += net_pnl
+
+    trade = {
+        "side": position["side"],
+        "entry": position["entry"],
+        "exit": actual_exit,
+        "quantity": position["quantity"],
+        "gross_pnl": gross_pnl,
+        "fees": position["entry_fee"] + exit_fee,
+        "net_pnl": net_pnl - position["entry_fee"],
+        "reason": reason,
     }
 
+    return balance, trade
 
-# =====================================================
+
+# =========================================================
 # BACKTEST ENGINE
-# =====================================================
+# =========================================================
 
-def backtest(candles, map15, map45, method):
+def backtest(symbol, method, candles_3m, candles_15m, candles_45m):
+    if len(candles_3m) < 100:
+        print(f"{symbol}: Not enough 3m candles")
+        return None
+
+    ichimoku_3m = calculate_ichimoku(candles_3m)
+
+    times_15, trends_15 = build_trend_data(candles_15m)
+    times_45, trends_45 = build_trend_data(candles_45m)
+
     balance = START_BALANCE
-    peak_balance = balance
+    peak_equity = START_BALANCE
     max_drawdown = 0.0
 
-    trades = []
     position = None
+    trades = []
 
-    for i in range(80, len(candles)):
+    long_count = 0
+    short_count = 0
 
-        candle = candles[i]
+    for i in range(80, len(candles_3m) - 1):
+        candle = candles_3m[i]
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # Manage open position
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         if position is not None:
-            side = position["side"]
+            stop_hit = False
+            target_hit = False
 
-            if side == "LONG":
-                hit_sl = candle[3] <= position["stop"]
-                hit_tp = candle[2] >= position["target"]
+            if position["side"] == "LONG":
+                stop_hit = candle["low"] <= position["stop"]
+                target_hit = candle["high"] >= position["target"]
+
             else:
-                hit_sl = candle[2] >= position["stop"]
-                hit_tp = candle[3] <= position["target"]
+                stop_hit = candle["high"] >= position["stop"]
+                target_hit = candle["low"] <= position["target"]
 
-            if hit_sl or hit_tp:
+            # Conservative assumption:
+            # if stop and target are both hit in one candle,
+            # assume stop was hit first.
+            if stop_hit:
+                exit_price = position["stop"]
 
-                # Conservative assumption:
-                # If both hit in one candle, SL first.
-                if hit_sl:
-                    raw_exit = position["stop"]
-                    result = "LOSS"
-                else:
-                    raw_exit = position["target"]
-                    result = "WIN"
+                if position["side"] == "LONG" and candle["open"] < position["stop"]:
+                    exit_price = candle["open"]
 
-                if side == "LONG":
-                    exit_price = raw_exit * (1 - SLIPPAGE)
+                if position["side"] == "SHORT" and candle["open"] > position["stop"]:
+                    exit_price = candle["open"]
 
-                    gross = (
-                        exit_price - position["entry"]
-                    ) * position["quantity"]
-
-                else:
-                    exit_price = raw_exit * (1 + SLIPPAGE)
-
-                    gross = (
-                        position["entry"] - exit_price
-                    ) * position["quantity"]
-
-                exit_fee = (
-                    abs(exit_price)
-                    * position["quantity"]
-                    * FEE_RATE
+                balance, trade = close_position(
+                    position,
+                    exit_price,
+                    balance,
+                    "STOP",
                 )
 
-                net = (
-                    gross
-                    - position["entry_fee"]
-                    - exit_fee
-                )
-
-                balance += net
-
-                trades.append({
-                    "side": side,
-                    "net": net,
-                    "result": (
-                        "WIN" if net > 0 else "LOSS"
-                    ),
-                })
-
+                trades.append(trade)
                 position = None
 
-                peak_balance = max(
-                    peak_balance,
-                    balance
+            elif target_hit:
+                balance, trade = close_position(
+                    position,
+                    position["target"],
+                    balance,
+                    "TARGET",
                 )
 
-                if peak_balance > 0:
-                    drawdown = (
-                        peak_balance - balance
-                    ) / peak_balance * 100
+                trades.append(trade)
+                position = None
 
-                    max_drawdown = max(
-                        max_drawdown,
-                        drawdown
-                    )
+            # Do not open a new trade on the same candle
+            if position is None:
+                continue
 
+        # -------------------------------------------------
+        # Mark-to-market drawdown
+        # -------------------------------------------------
+
+        if position is not None:
+            unrealized = unrealized_pnl(
+                position,
+                candle["close"],
+            )
+
+            estimated_exit_fee = (
+                candle["close"]
+                * position["quantity"]
+                * (FEE_RATE + SLIPPAGE)
+            )
+
+            equity = balance + unrealized - estimated_exit_fee
+
+        else:
+            equity = balance
+
+        peak_equity = max(peak_equity, equity)
+
+        if peak_equity > 0:
+            drawdown = (
+                peak_equity - equity
+            ) / peak_equity * 100
+
+            max_drawdown = max(
+                max_drawdown,
+                drawdown,
+            )
+
+        # -------------------------------------------------
+        # New signal
+        # -------------------------------------------------
+
+        if position is not None:
             continue
 
-        # ---------------------------------------------
-        # Signal at candle close
-        # Entry at next candle open
-        # ---------------------------------------------
+        signal_time = candle["time"] + 180
 
-        if i + 1 >= len(candles):
-            break
-
-        signal_time = (
-            candle[0] // 1000 + 180
+        trend_15 = get_confirmed_trend(
+            times_15,
+            trends_15,
+            signal_time,
         )
 
-        trend15 = confirmed_trend(
-            map15,
-            signal_time
+        trend_45 = get_confirmed_trend(
+            times_45,
+            trends_45,
+            signal_time,
         )
 
-        trend45 = confirmed_trend(
-            map45,
-            signal_time
-        )
+        if trend_15 != trend_45:
+            continue
 
-        signal = make_signal(
-            candles,
+        if trend_15 == "NEUTRAL":
+            continue
+
+        signal = get_signal(
+            method,
+            candles_3m,
+            ichimoku_3m,
             i,
-            trend15,
-            trend45,
-            method
         )
 
         if signal is None:
             continue
 
-        next_open = candles[i + 1][1]
-
-        side = signal["side"]
-        stop = signal["stop"]
-
-        if side == "LONG":
-            entry = next_open * (1 + SLIPPAGE)
-            stop_distance = entry - stop
-
-        else:
-            entry = next_open * (1 - SLIPPAGE)
-            stop_distance = stop - entry
-
-        if stop_distance <= 0:
+        if signal == "LONG" and trend_15 != "BULLISH":
             continue
 
-        if balance <= 0:
-            break
+        if signal == "SHORT" and trend_15 != "BEARISH":
+            continue
 
-        risk_cash = balance * RISK_PER_TRADE
-        quantity = risk_cash / stop_distance
+        # Entry occurs at the next candle open
+        next_candle = candles_3m[i + 1]
 
-        if side == "LONG":
-            target = entry + stop_distance * MIN_RR
-        else:
-            target = entry - stop_distance * MIN_RR
-
-        entry_fee = (
-            abs(entry) * quantity * FEE_RATE
+        entry = apply_entry_slippage(
+            next_candle["open"],
+            signal,
         )
 
+        stop_window = candles_3m[
+            max(0, i - LOOKBACK_STOP + 1):i + 1
+        ]
+
+        if signal == "LONG":
+            stop = min(x["low"] for x in stop_window)
+
+            if stop >= entry:
+                continue
+
+            risk_distance = entry - stop
+            target = entry + risk_distance * RISK_REWARD
+
+        else:
+            stop = max(x["high"] for x in stop_window)
+
+            if stop <= entry:
+                continue
+
+            risk_distance = stop - entry
+            target = entry - risk_distance * RISK_REWARD
+
+        actual_rr = abs(target - entry) / risk_distance
+
+        if actual_rr < MIN_RR:
+            continue
+
+        quantity = calculate_position_size(
+            balance,
+            entry,
+            stop,
+        )
+
+        if quantity <= 0:
+            continue
+
+        notional = quantity * entry
+        required_margin = notional / MAX_LEVERAGE
+
+        if required_margin > balance:
+            continue
+
+        entry_fee = notional * FEE_RATE
+        balance -= entry_fee
+
         position = {
-            "side": side,
+            "side": signal,
             "entry": entry,
             "stop": stop,
             "target": target,
@@ -608,250 +713,261 @@ def backtest(candles, map15, map45, method):
             "entry_fee": entry_fee,
         }
 
-    # ---------------------------------------------
-    # Close any remaining position at final close
-    # ---------------------------------------------
-
-    if position is not None and candles:
-        last_close = candles[-1][4]
-        side = position["side"]
-
-        if side == "LONG":
-            exit_price = last_close * (1 - SLIPPAGE)
-            gross = (
-                exit_price - position["entry"]
-            ) * position["quantity"]
+        if signal == "LONG":
+            long_count += 1
         else:
-            exit_price = last_close * (1 + SLIPPAGE)
-            gross = (
-                position["entry"] - exit_price
-            ) * position["quantity"]
+            short_count += 1
 
-        exit_fee = (
-            abs(exit_price)
-            * position["quantity"]
-            * FEE_RATE
+    # =====================================================
+    # Close any remaining open position at final candle
+    # =====================================================
+
+    if position is not None:
+        final_price = candles_3m[-1]["close"]
+
+        balance, trade = close_position(
+            position,
+            final_price,
+            balance,
+            "END_OF_DATA",
         )
 
-        net = (
-            gross
-            - position["entry_fee"]
-            - exit_fee
-        )
+        trades.append(trade)
+        position = None
 
-        balance += net
+        peak_equity = max(peak_equity, balance)
 
-        trades.append({
-            "side": side,
-            "net": net,
-            "result": "WIN" if net > 0 else "LOSS",
-        })
+        if peak_equity > 0:
+            drawdown = (
+                peak_equity - balance
+            ) / peak_equity * 100
 
-    # ---------------------------------------------
+            max_drawdown = max(
+                max_drawdown,
+                drawdown,
+            )
+
+    # =====================================================
     # Statistics
-    # ---------------------------------------------
+    # =====================================================
 
-    wins = sum(
-        1 for t in trades
-        if t["net"] > 0
-    )
+    wins = [
+        x for x in trades
+        if x["net_pnl"] > 0
+    ]
 
-    losses = sum(
-        1 for t in trades
-        if t["net"] <= 0
-    )
+    losses = [
+        x for x in trades
+        if x["net_pnl"] <= 0
+    ]
 
     gross_profit = sum(
-        t["net"] for t in trades
-        if t["net"] > 0
+        x["net_pnl"] for x in wins
     )
 
     gross_loss = abs(sum(
-        t["net"] for t in trades
-        if t["net"] < 0
+        x["net_pnl"] for x in losses
     ))
 
     profit_factor = (
         gross_profit / gross_loss
         if gross_loss > 0
-        else 0.0
+        else float("inf") if gross_profit > 0
+        else 0
     )
 
     win_rate = (
-        wins / len(trades) * 100
-        if trades
-        else 0.0
+        len(wins) / len(trades) * 100
+        if trades else 0
     )
 
-    long_trades = sum(
-        1 for t in trades
-        if t["side"] == "LONG"
-    )
-
-    short_trades = sum(
-        1 for t in trades
-        if t["side"] == "SHORT"
-    )
+    net_profit = balance - START_BALANCE
 
     return {
+        "symbol": symbol,
         "method": method,
         "trades": len(trades),
-        "wins": wins,
-        "losses": losses,
+        "wins": len(wins),
+        "losses": len(losses),
         "win_rate": win_rate,
         "profit_factor": profit_factor,
-        "net_profit": balance - START_BALANCE,
+        "net_profit": net_profit,
+        "net_percent": net_profit / START_BALANCE * 100,
+        "max_drawdown": max_drawdown,
+        "longs": long_count,
+        "shorts": short_count,
         "final_balance": balance,
-        "drawdown": max_drawdown,
-        "long_trades": long_trades,
-        "short_trades": short_trades,
     }
 
 
-# =====================================================
+# =========================================================
 # REPORT
-# =====================================================
+# =========================================================
 
-def print_report(symbol, result):
-    print("\n" + "=" * 50)
-    print("SYMBOL:", symbol)
-    print("METHOD:", result["method"])
-    print("=" * 50)
-
-    print("Trades:", result["trades"])
-    print("Wins:", result["wins"])
-    print("Losses:", result["losses"])
-
-    print(
-        "Win rate:",
-        round(result["win_rate"], 2),
-        "%"
-    )
-
-    print(
-        "Profit factor:",
-        round(result["profit_factor"], 3)
-    )
-
-    print(
-        "Net profit:",
-        round(result["net_profit"], 2)
-    )
-
-    print(
-        "Final balance:",
-        round(result["final_balance"], 2)
-    )
-
-    print(
-        "Max drawdown:",
-        round(result["drawdown"], 2),
-        "%"
-    )
-
-    print("Long trades:", result["long_trades"])
-    print("Short trades:", result["short_trades"])
-
-
-# =====================================================
-# RUN SYMBOL
-# =====================================================
-
-def run_symbol(symbol, start_ts, end_ts):
-    print("\nDownloading:", symbol)
-
-    one_minute = fetch_klines(
-        symbol,
-        "Min1",
-        start_ts,
-        end_ts
-    )
-
-    fifteen_minute = fetch_klines(
-        symbol,
-        "Min15",
-        start_ts,
-        end_ts
-    )
-
-    three_minute = aggregate(
-        one_minute,
-        1,
-        3
-    )
-
-    forty_five_minute = aggregate(
-        fifteen_minute,
-        15,
-        45
-    )
-
-    print("1m candles:", len(one_minute))
-    print("3m candles:", len(three_minute))
-    print("15m candles:", len(fifteen_minute))
-    print("45m candles:", len(forty_five_minute))
-
-    if (
-        len(three_minute) < 200
-        or len(fifteen_minute) < 100
-        or len(forty_five_minute) < 80
-    ):
-        print("Not enough data:", symbol)
+def print_result(result):
+    if result is None:
         return
 
-    map15 = build_trend_map(
-        fifteen_minute,
-        15 * 60
-    )
+    print("\n" + "=" * 55)
+    print(f"SYMBOL: {result['symbol']}")
+    print(f"METHOD: {result['method']}")
+    print("-" * 55)
 
-    map45 = build_trend_map(
-        forty_five_minute,
-        45 * 60
-    )
+    print(f"Trades       : {result['trades']}")
+    print(f"Wins         : {result['wins']}")
+    print(f"Losses       : {result['losses']}")
+    print(f"Win rate     : {result['win_rate']:.2f}%")
 
-    # Test each entry method separately.
-    for method in ("BREAKOUT", "PULLBACK"):
-        result = backtest(
-            three_minute,
-            map15,
-            map45,
-            method
+    if result["profit_factor"] == float("inf"):
+        print("Profit factor: INF")
+    else:
+        print(
+            f"Profit factor: "
+            f"{result['profit_factor']:.3f}"
         )
 
-        print_report(symbol, result)
+    print(
+        f"Net profit   : "
+        f"${result['net_profit']:.2f}"
+    )
+
+    print(
+        f"Net return   : "
+        f"{result['net_percent']:.2f}%"
+    )
+
+    print(
+        f"Max drawdown : "
+        f"{result['max_drawdown']:.2f}%"
+    )
+
+    print(f"Long trades  : {result['longs']}")
+    print(f"Short trades : {result['shorts']}")
+
+    print(
+        f"Final balance: "
+        f"${result['final_balance']:.2f}"
+    )
 
 
-# =====================================================
+# =========================================================
+# SYMBOL RUNNER
+# =========================================================
+
+def run_symbol(symbol):
+    print("\n" + "#" * 60)
+    print(f"Downloading data for {symbol}")
+
+    candles_1m = fetch_klines(
+        symbol,
+        "Min1",
+        DAYS,
+    )
+
+    candles_15m = fetch_klines(
+        symbol,
+        "Min15",
+        DAYS,
+    )
+
+    if not candles_1m or not candles_15m:
+        print(f"Data unavailable for {symbol}")
+        return []
+
+    candles_3m = aggregate_candles(
+        candles_1m,
+        3,
+    )
+
+    candles_45m = aggregate_15m_to_45m(
+        candles_15m,
+    )
+
+    print(f"1m candles : {len(candles_1m)}")
+    print(f"3m candles : {len(candles_3m)}")
+    print(f"15m candles: {len(candles_15m)}")
+    print(f"45m candles: {len(candles_45m)}")
+
+    results = []
+
+    for method in METHODS:
+        print(f"\nRunning {method} backtest...")
+
+        result = backtest(
+            symbol,
+            method,
+            candles_3m,
+            candles_15m,
+            candles_45m,
+        )
+
+        print_result(result)
+
+        if result is not None:
+            results.append(result)
+
+    return results
+
+
+# =========================================================
 # MAIN
-# =====================================================
+# =========================================================
 
 def main():
-    print("NIMA ICHIMOKU SCALPER V2")
-    print("BACKTEST ONLY - NO LIVE ORDERS")
-    print("Exchange: MEXC")
-    print("Entry timeframe: 3m")
-    print("Trend timeframes: 15m / 45m")
-    print("Test period:", DAYS, "days")
+    print("\nNIMA ICHIMOKU SCALPER V2")
+    print("MEXC FUTURES - BACKTEST ONLY")
+    print("=" * 60)
 
-    end_ts = int(time.time())
-    start_ts = end_ts - DAYS * 24 * 60 * 60
+    print(f"Period       : {DAYS} days")
+    print(f"Start balance: ${START_BALANCE:.2f}")
+    print(f"Risk/trade   : {RISK_PER_TRADE * 100:.2f}%")
+    print(f"Max leverage : {MAX_LEVERAGE}x")
+    print(f"Risk/Reward  : 1:{RISK_REWARD}")
+    print(f"Fee per side : {FEE_RATE * 100:.3f}%")
+    print(f"Slippage     : {SLIPPAGE * 100:.3f}%")
+
+    all_results = []
 
     for symbol in SYMBOLS:
         try:
-            run_symbol(
-                symbol,
-                start_ts,
-                end_ts
-            )
+            results = run_symbol(symbol)
+            all_results.extend(results)
 
-        except Exception as error:
-            print(
-                "\nERROR:",
-                symbol,
-                str(error)
-            )
+        except Exception as exc:
+            print(f"Error processing {symbol}: {exc}")
 
-    print("\nBACKTEST FINISHED")
+    print("\n\nFINAL COMPARISON")
+    print("=" * 75)
+
+    print(
+        f"{'SYMBOL':<12}"
+        f"{'METHOD':<12}"
+        f"{'TRADES':>8}"
+        f"{'WIN%':>9}"
+        f"{'PF':>9}"
+        f"{'NET%':>10}"
+        f"{'DD%':>9}"
+    )
+
+    for r in all_results:
+        pf = (
+            "INF"
+            if r["profit_factor"] == float("inf")
+            else f"{r['profit_factor']:.2f}"
+        )
+
+        print(
+            f"{r['symbol']:<12}"
+            f"{r['method']:<12}"
+            f"{r['trades']:>8}"
+            f"{r['win_rate']:>8.2f}%"
+            f"{pf:>9}"
+            f"{r['net_percent']:>9.2f}%"
+            f"{r['max_drawdown']:>8.2f}%"
+        )
+
+    print("\nBacktest completed.")
+    print("This script does not place live orders.")
 
 
 if __name__ == "__main__":
