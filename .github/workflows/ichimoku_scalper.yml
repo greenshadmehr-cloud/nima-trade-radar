@@ -21,7 +21,7 @@ jobs:
         run: pip install requests
 
       - name: Run backtest
-        run: python nima_ichimoku_scalper_v3.py --symbol BTC_USDT --days 30
+        run: python nima_ichimoku_scalper_v4.py --symbol BTC_USDT --days 30
 
       - name: Upload trade report
         if: always()
