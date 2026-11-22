@@ -327,9 +327,9 @@ def detect_retest(candles, swings, bos):
     return "NO_RETEST"
 
 # اسکن بازار
+
 def main():
-    print("NIMA PRICE ACTION - STRUCTURE TEST")
-    print("MEXC FUTURES | 15m + 3m BOS")
+    print("NIMA PRICE ACTION - STRUCTURE + BOS + RETEST")
     print("--------------------------------")
 
     symbols = get_top_contracts()
@@ -339,35 +339,32 @@ def main():
             candles_15m = get_15m_candles(symbol)
 
             swings_15m = detect_swings(
-                candles_15m,
-                left=3,
-                right=3
+                candles_15m, left=3, right=3
             )
 
-            structure = detect_market_structure(
-                swings_15m
-            )
+            structure = detect_market_structure(swings_15m)
 
             candles_3m = get_3m_candles(symbol)
 
             swings_3m = detect_swings(
-                candles_3m,
-                left=2,
-                right=2
+                candles_3m, left=2, right=2
             )
 
-            bos = detect_bos(
-                candles_3m,
-                swings_3m
+            bos = detect_bos(candles_3m, swings_3m)
+
+            retest = detect_retest(
+                candles_3m, swings_3m, bos
             )
 
-            retest = detect_retest(candles_3m, swings_3m, bos)
+            print(
+                f"{symbol} | 15m: {structure} | "
+                f"3m BOS: {bos} | Retest: {retest}"
+            )
 
-            print(f"{symbol} | 15m: {structure} | 3m BOS: {bos} | Retest: {retest}")  
         except Exception as error:
             print(f"{symbol} | ERROR: {error}")
 
-             time.sleep(0.15)
+        time.sleep(0.15)
 
 
 if __name__ == "__main__":
