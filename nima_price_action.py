@@ -361,16 +361,14 @@ def main():
                 swings_3m
             )
 
-            print(
-                f"{symbol} | "
-                f"15m: {structure} | "
-                f"3m BOS: {bos}"
-            )
+            retest = detect_retest(candles_3m, swings_3m, bos)
 
-        except Exception as error:
+            print(f"{symbol} | 15m: {structure} | 3m BOS: {bos} | Retest: {retest}")
+
+            except Exception as error:
             print(f"{symbol} | ERROR: {error}")
 
-        time.sleep(0.15)
+             time.sleep(0.15)
 
 
 if __name__ == "__main__":
