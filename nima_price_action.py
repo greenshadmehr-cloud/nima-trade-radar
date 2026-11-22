@@ -363,9 +363,8 @@ def main():
 
             retest = detect_retest(candles_3m, swings_3m, bos)
 
-            print(f"{symbol} | 15m: {structure} | 3m BOS: {bos} | Retest: {retest}")
-
-            except Exception as error:
+            print(f"{symbol} | 15m: {structure} | 3m BOS: {bos} | Retest: {retest}")  
+except Exception as error:
             print(f"{symbol} | ERROR: {error}")
 
              time.sleep(0.15)
