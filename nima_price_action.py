@@ -283,6 +283,49 @@ def detect_bos(candles, swings):
     return "NONE"
 
 
+def detect_retest(candles, swings, bos):
+    if len(candles) < 3 or not swings:
+        return "NO_RETEST"
+
+    last_candle = candles[-1]
+    previous_candle = candles[-2]
+
+    if bos == "BULLISH_BOS":
+        highs = [
+            s for s in swings
+            if s["type"] == "HIGH"
+        ]
+
+        if not highs:
+            return "NO_RETEST"
+
+        level = highs[-1]["price"]
+
+        touched = last_candle[3] <= level * 1.002
+        held = last_candle[4] > level
+
+        if touched and held:
+            return "BULLISH_RETEST"
+
+    elif bos == "BEARISH_BOS":
+        lows = [
+            s for s in swings
+            if s["type"] == "LOW"
+        ]
+
+        if not lows:
+            return "NO_RETEST"
+
+        level = lows[-1]["price"]
+
+        touched = last_candle[2] >= level * 0.998
+        held = last_candle[4] < level
+
+        if touched and held:
+            return "BEARISH_RETEST"
+
+    return "NO_RETEST"
+
 # اسکن بازار
 def main():
     print("NIMA PRICE ACTION - STRUCTURE TEST")
