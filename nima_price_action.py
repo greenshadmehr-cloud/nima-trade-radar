@@ -189,3 +189,33 @@ def main():
 
 if __name__ == "__main__":
     main()
+def detect_bos(candles, swings):
+    if len(candles) < 2:
+        return "NONE"
+
+    if not swings:
+        return "NONE"
+
+    last_candle = candles[-1]
+    previous_candle = candles[-2]
+
+    close_price = last_candle[4]
+
+    highs = [s for s in swings if s["type"] == "HIGH"]
+    lows = [s for s in swings if s["type"] == "LOW"]
+
+    if not highs or not lows:
+        return "NONE"
+
+    last_high = highs[-1]["price"]
+    last_low = lows[-1]["price"]
+
+    # شکست سقف با بسته شدن کندل
+    if close_price > last_high and previous_candle[4] <= last_high:
+        return "BULLISH_BOS"
+
+    # شکست کف با بسته شدن کندل
+    if close_price < last_low and previous_candle[4] >= last_low:
+        return "BEARISH_BOS"
+
+    return "NONE"
