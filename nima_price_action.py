@@ -146,48 +146,30 @@ def get_15m_candles(symbol, limit=120):
     return candles
 
 
+
 def main():
     print("NIMA PRICE ACTION - STRUCTURE TEST")
-    print("MEXC FUTURES | 15m")
+    print("MEXC FUTURES | 15m + 3m BOS")
     print("--------------------------------")
 
     symbols = get_top_contracts()
 
     for symbol in symbols:
         try:
-            candles = get_15m_candles(symbol)
-
-            swings = detect_swings(
-                candles,
-                left=3,
-                right=3
+            candles_15m = get_15m_candles(symbol)
+            swings_15m = detect_swings(
+                candles_15m, left=3, right=3
             )
+            structure = detect_market_structure(swings_15m)
 
-            structure = detect_market_structure(swings)
             candles_3m = get_3m_candles(symbol)
-
-            swings_3m = detect_swings(candles_3m,
-            left=2,
-            right=2
-                )
-
-             bos = detect_bos(candles_3m, swings_3m)
-
-              print(f"3m BOS: {bos}")
-            highs = [
-                x["price"] for x in swings
-                if x["type"] == "HIGH"
-            ]
-
-            lows = [
-                x["price"] for x in swings
-                if x["type"] == "LOW"
-            ]
+            swings_3m = detect_swings(
+                candles_3m, left=2, right=2
+            )
+            bos = detect_bos(candles_3m, swings_3m)
 
             print(
-                f"{symbol} | {structure} | "
-                f"Highs: {len(highs)} | "
-                f"Lows: {len(lows)}"
+                f"{symbol} | 15m: {structure} | 3m BOS: {bos}"
             )
 
         except Exception as error:
