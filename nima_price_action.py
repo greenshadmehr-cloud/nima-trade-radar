@@ -247,85 +247,99 @@ def get_3m_candles(symbol, limit=150):
 
 
 # تشخیص شکست ساختار BOS
-def detect_bos(candles, swings):
-    if len(candles) < 2 or not swings:
-        return "NONE"
 
-    last_close = candles[-1][4]
-    previous_close = candles[-2][4]
+def find_latest_bos_and_retest(candles, swings, right=2, tolerance=0.0015, max_bars=10):
+    result = {
+        "bos": "NONE",
+        "retest": "NO_RETEST",
+        "level": None
+    }
 
-    highs = [
-        s for s in swings if s["type"] == "HIGH"
-    ]
+    if len(candles) < 5 or not swings:
+        return result
 
-    lows = [
-        s for s in swings if s["type"] == "LOW"
-    ]
+    latest_bos = None
 
-    if highs:
-        last_high = highs[-1]["price"]
+    for i in range(1, len(candles)):
+        previous_close = candles[i - 1][4]
+        current_close = candles[i][4]
 
-        if (
-            last_close > last_high
-            and previous_close <= last_high
-        ):
-            return "BULLISH_BOS"
-
-    if lows:
-        last_low = lows[-1]["price"]
-
-        if (
-            last_close < last_low
-            and previous_close >= last_low
-        ):
-            return "BEARISH_BOS"
-
-    return "NONE"
-
-
-def detect_retest(candles, swings, bos):
-    if len(candles) < 3 or not swings:
-        return "NO_RETEST"
-
-    last_candle = candles[-1]
-    previous_candle = candles[-2]
-
-    if bos == "BULLISH_BOS":
-        highs = [
+        available_highs = [
             s for s in swings
             if s["type"] == "HIGH"
+            and s["index"] < i
+            and s["index"] + right <= i
         ]
 
-        if not highs:
-            return "NO_RETEST"
-
-        level = highs[-1]["price"]
-
-        touched = last_candle[3] <= level * 1.002
-        held = last_candle[4] > level
-
-        if touched and held:
-            return "BULLISH_RETEST"
-
-    elif bos == "BEARISH_BOS":
-        lows = [
+        available_lows = [
             s for s in swings
             if s["type"] == "LOW"
+            and s["index"] < i
+            and s["index"] + right <= i
         ]
 
-        if not lows:
-            return "NO_RETEST"
+        if available_highs:
+            last_high = max(available_highs, key=lambda s: s["index"])
+            level = last_high["price"]
 
-        level = lows[-1]["price"]
+            if previous_close <= level and current_close > level:
+                latest_bos = {
+                    "direction": "BULLISH",
+                    "level": level,
+                    "index": i
+                }
 
-        touched = last_candle[2] >= level * 0.998
-        held = last_candle[4] < level
+        if available_lows:
+            last_low = max(available_lows, key=lambda s: s["index"])
+            level = last_low["price"]
 
-        if touched and held:
-            return "BEARISH_RETEST"
+            if previous_close >= level and current_close < level:
+                latest_bos = {
+                    "direction": "BEARISH",
+                    "level": level,
+                    "index": i
+                }
 
-    return "NO_RETEST"
+    if latest_bos is None:
+        return result
 
+    direction = latest_bos["direction"]
+    level = latest_bos["level"]
+    bos_index = latest_bos["index"]
+
+    result["bos"] = direction + "_BOS"
+    result["level"] = level
+
+    if len(candles) - 1 - bos_index > max_bars:
+        result["retest"] = "BOS_EXPIRED"
+        return result
+
+    for i in range(bos_index + 1, len(candles)):
+        candle = candles[i]
+        high = candle[2]
+        low = candle[3]
+        close = candle[4]
+
+        if direction == "BULLISH":
+            if low <= level * (1 + tolerance) and close > level:
+                result["retest"] = "BULLISH_RETEST"
+                return result
+
+            if close < level:
+                result["retest"] = "BOS_FAILED"
+                return result
+
+        else:
+            if high >= level * (1 - tolerance) and close < level:
+                result["retest"] = "BEARISH_RETEST"
+                return result
+
+            if close > level:
+                result["retest"] = "BOS_FAILED"
+                return result
+
+    result["retest"] = "WAITING_RETEST"
+    return result
 # اسکن بازار
 
 def main():
@@ -350,16 +364,13 @@ def main():
                 candles_3m, left=2, right=2
             )
 
-            bos = detect_bos(candles_3m, swings_3m)
-
-            retest = detect_retest(
-                candles_3m, swings_3m, bos
-            )
+            pa = 
+            find_latest_bos_and_retest(candles_3m, swings_3m, right=2)
+            bos = pa["bos"]
+            retest = pa["retest"]
 
             print(
-                f"{symbol} | 15m: {structure} | "
-                f"3m BOS: {bos} | Retest: {retest}"
-            )
+                f"3m BOS: {bos} | Retest: {retest} | Level: {pa['level']}"
 
         except Exception as error:
             print(f"{symbol} | ERROR: {error}")
