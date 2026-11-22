@@ -164,7 +164,17 @@ def main():
             )
 
             structure = detect_market_structure(swings)
+    candles_3m = get_3m_candles(symbol)
 
+    swings_3m = detect_swings(
+    candles_3m,
+    left=2,
+    right=2
+    )
+
+    bos = detect_bos(candles_3m, swings_3m)
+
+    print(f"3m BOS: {bos}")
             highs = [
                 x["price"] for x in swings
                 if x["type"] == "HIGH"
@@ -219,3 +229,61 @@ def detect_bos(candles, swings):
         return "BEARISH_BOS"
 
     return "NONE"
+def get_3m_candles(symbol, limit=150):
+    now = int(time.time())
+    seconds = 180
+
+    result = get_json(
+        f"/api/v1/contract/kline/{symbol}",
+        {
+            "interval": "Min1",
+            "start": now - (limit * 3 + 5) * 60,
+            "end": now
+        }
+    )
+
+    data = result["data"]
+    candles_1m = []
+
+    for i, ts in enumerate(data["time"]):
+        ts = int(ts)
+
+        if ts + 60 > now:
+            continue
+
+        candles_1m.append([
+            ts,
+            float(data["open"][i]),
+            float(data["high"][i]),
+            float(data["low"][i]),
+            float(data["close"][i]),
+            float(data["vol"][i])
+        ])
+
+    candles_3m = []
+
+    for i in range(0, len(candles_1m) - 2, 3):
+        group = candles_1m[i:i + 3]
+
+        if len(group) != 3:
+            continue
+
+        if group[0][0] % seconds != 0:
+            continue
+
+        if group[1][0] != group[0][0] + 60:
+            continue
+
+        if group[2][0] != group[0][0] + 120:
+            continue
+
+        candles_3m.append([
+            group[0][0],
+            group[0][1],
+            max(x[2] for x in group),
+            min(x[3] for x in group),
+            group[2][4],
+            sum(x[5] for x in group)
+        ])
+
+    return candles_3m
