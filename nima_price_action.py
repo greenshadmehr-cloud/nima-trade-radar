@@ -205,6 +205,7 @@ def get_3m_candles(symbol, limit=150):
 
         bucket = (ts // 180) * 180
 
+        # حذف کندل سه دقیقه‌ای باز
         if bucket + 180 > now:
             continue
 
@@ -246,9 +247,14 @@ def get_3m_candles(symbol, limit=150):
     return candles_3m[-limit:]
 
 
-# تشخیص شکست ساختار BOS
-
-def find_latest_bos_and_retest(candles, swings, right=2, tolerance=0.0015, max_bars=10):
+# تشخیص آخرین BOS و بررسی Retest واقعی
+def find_latest_bos_and_retest(
+    candles,
+    swings,
+    right=2,
+    tolerance=0.0015,
+    max_bars=10
+):
     result = {
         "bos": "NONE",
         "retest": "NO_RETEST",
@@ -264,6 +270,7 @@ def find_latest_bos_and_retest(candles, swings, right=2, tolerance=0.0015, max_b
         previous_close = candles[i - 1][4]
         current_close = candles[i][4]
 
+        # فقط سقف‌هایی که در زمان شکست قابل شناسایی بوده‌اند
         available_highs = [
             s for s in swings
             if s["type"] == "HIGH"
@@ -271,6 +278,7 @@ def find_latest_bos_and_retest(candles, swings, right=2, tolerance=0.0015, max_b
             and s["index"] + right <= i
         ]
 
+        # فقط کف‌هایی که در زمان شکست قابل شناسایی بوده‌اند
         available_lows = [
             s for s in swings
             if s["type"] == "LOW"
@@ -279,7 +287,11 @@ def find_latest_bos_and_retest(candles, swings, right=2, tolerance=0.0015, max_b
         ]
 
         if available_highs:
-            last_high = max(available_highs, key=lambda s: s["index"])
+            last_high = max(
+                available_highs,
+                key=lambda s: s["index"]
+            )
+
             level = last_high["price"]
 
             if previous_close <= level and current_close > level:
@@ -290,7 +302,11 @@ def find_latest_bos_and_retest(candles, swings, right=2, tolerance=0.0015, max_b
                 }
 
         if available_lows:
-            last_low = max(available_lows, key=lambda s: s["index"])
+            last_low = max(
+                available_lows,
+                key=lambda s: s["index"]
+            )
+
             level = last_low["price"]
 
             if previous_close >= level and current_close < level:
@@ -310,50 +326,64 @@ def find_latest_bos_and_retest(candles, swings, right=2, tolerance=0.0015, max_b
     result["bos"] = direction + "_BOS"
     result["level"] = level
 
+    # اگر شکست قدیمی باشد، منقضی می‌شود
     if len(candles) - 1 - bos_index > max_bars:
         result["retest"] = "BOS_EXPIRED"
         return result
 
+    # بررسی کندل‌های بعد از BOS
     for i in range(bos_index + 1, len(candles)):
         candle = candles[i]
+
         high = candle[2]
         low = candle[3]
         close = candle[4]
 
         if direction == "BULLISH":
+
+            # پولبک به سطح شکست و بسته شدن بالای آن
             if low <= level * (1 + tolerance) and close > level:
                 result["retest"] = "BULLISH_RETEST"
                 return result
 
+            # شکست ناموفق
             if close < level:
                 result["retest"] = "BOS_FAILED"
                 return result
 
         else:
+
+            # پولبک به سطح شکست و بسته شدن زیر آن
             if high >= level * (1 - tolerance) and close < level:
                 result["retest"] = "BEARISH_RETEST"
                 return result
 
+            # شکست ناموفق
             if close > level:
                 result["retest"] = "BOS_FAILED"
                 return result
 
     result["retest"] = "WAITING_RETEST"
     return result
-# اسکن بازار
 
+
+# اسکن بازار
 def main():
     print("NIMA PRICE ACTION - STRUCTURE + BOS + RETEST")
-    print("--------------------------------")
+    print("---------------------------------------------")
 
     symbols = get_top_contracts()
+
+    print(f"Scanning {len(symbols)} contracts...\n")
 
     for symbol in symbols:
         try:
             candles_15m = get_15m_candles(symbol)
 
             swings_15m = detect_swings(
-                candles_15m, left=3, right=3
+                candles_15m,
+                left=3,
+                right=3
             )
 
             structure = detect_market_structure(swings_15m)
@@ -361,16 +391,24 @@ def main():
             candles_3m = get_3m_candles(symbol)
 
             swings_3m = detect_swings(
-                candles_3m, left=2, right=2
+                candles_3m,
+                left=2,
+                right=2
             )
 
-            pa = 
-            find_latest_bos_and_retest(candles_3m, swings_3m, right=2)
-            bos = pa["bos"]
-            retest = pa["retest"]
+            pa = find_latest_bos_and_retest(
+                candles_3m,
+                swings_3m,
+                right=2
+            )
 
             print(
-                f"3m BOS: {bos} | Retest: {retest} | Level: {pa['level']}"
+                f"{symbol} | "
+                f"15m: {structure} | "
+                f"3m BOS: {pa['bos']} | "
+                f"Retest: {pa['retest']} | "
+                f"Level: {pa['level']}"
+            )
 
         except Exception as error:
             print(f"{symbol} | ERROR: {error}")
