@@ -164,17 +164,16 @@ def main():
             )
 
             structure = detect_market_structure(swings)
-    candles_3m = get_3m_candles(symbol)
+            candles_3m = get_3m_candles(symbol)
 
-    swings_3m = detect_swings(
-    candles_3m,
-    left=2,
-    right=2
-    )
+            swings_3m = detect_swings(candles_3m,
+            left=2,
+            right=2
+                )
 
-    bos = detect_bos(candles_3m, swings_3m)
+             bos = detect_bos(candles_3m, swings_3m)
 
-    print(f"3m BOS: {bos}")
+              print(f"3m BOS: {bos}")
             highs = [
                 x["price"] for x in swings
                 if x["type"] == "HIGH"
